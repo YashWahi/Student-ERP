@@ -1,0 +1,32 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Helper functions
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    // Platform Multi-Tenant Access Rules
+    match /tenants/{tenantId} {
+      allow read: if true;
+      allow write: if isAuthenticated();
+
+      match /{allSubcollections=**} {
+        allow read: if true;
+        allow write: if isAuthenticated();
+      }
+    }
+
+    // Users Collection
+    match /users/{userId} {
+      allow read, write: if isAuthenticated() || request.auth.uid == userId;
+    }
+
+    // Operational Collections Guard (Students, Fees, Attendance, Timetable, Exams, etc.)
+    match /{collectionId}/{docId} {
+      allow read: if true;
+      allow write: if isAuthenticated();
+    }
+  }
+}
