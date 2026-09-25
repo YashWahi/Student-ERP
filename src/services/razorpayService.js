@@ -1,11 +1,28 @@
 // src/services/razorpayService.js
-import { recordFeePayment } from './feeService';
+//
+// Student-ERP — Razorpay Test Mode frontend client (Issue #19).
+//
+// Secure flow: Frontend -> Cloud Functions backend -> Razorpay Test API ->
+// real order_id -> Razorpay Checkout -> backend HMAC verification ->
+// Firestore payment update (server-side, Admin SDK).
+//
+// SECURITY RULES enforced here:
+// - The Key Secret is NEVER present in this file or any frontend code.
+// - No fake order ids (order_rzp_*) or fabricated payment ids (pay_test_*).
+// - No client-side "verified: true" — only the backend verdict marks Paid.
+// - Firestore writes happen server-side in verifyRazorpayPayment; the frontend
+//   only generates the PDF receipt + UI updates after backend confirmation.
 
-const RAZORPAY_KEY_ID = import.meta.env.VITE_RAZORPAY_KEY_ID || 'rzp_test_S2ypsM1Yy2EF0e';
+import { httpsCallable } from 'firebase/functions';
+import { functions } from '../config/firebase';
+import { FALLBACK_RAZORPAY_KEY_ID, RAZORPAY_FUNCTIONS } from '../config/payments';
+import { generateFeeReceiptPDF } from './pdfService';
+
+const fn = (name) => httpsCallable(functions, name);
 
 export const loadRazorpayScript = () => {
   return new Promise((resolve) => {
-    if (window.Razorpay) {
+    if (typeof window !== 'undefined' && window.Razorpay) {
       resolve(true);
       return;
     }
@@ -18,57 +35,215 @@ export const loadRazorpayScript = () => {
 };
 
 /**
- * 1. Create Razorpay Order (Backend/API simulation)
+ * Resolve the public Razorpay Test Key ID (safe for browser use).
+ * Primary source: getRazorpayPublicKey callable. Falls back to the
+ * VITE_RAZORPAY_KEY_ID env override for local dev only.
  */
-export const createRazorpayOrder = async ({ amount, currency = 'INR', receipt, notes = {} }) => {
-  // In production, this call invokes your backend express API or Firebase Cloud Function:
-  // const res = await fetch('/api/razorpay/create-order', { method: 'POST', body: JSON.stringify({ amount, currency, receipt, notes }) });
-  // return await res.json();
-  const orderId = `order_rzp_${Date.now().toString().slice(-8)}`;
-  return {
-    id: orderId,
-    amount: amount * 100, // in paise
-    currency,
-    receipt: receipt || `rec_${Date.now().toString().slice(-6)}`,
-    status: 'created',
-    notes,
+export const getRazorpayKeyId = async () => {
+  try {
+    const res = await fn(RAZORPAY_FUNCTIONS.getPublicKey)({});
+    if (res?.data?.keyId) return res.data.keyId;
+  } catch (err) {
+    console.warn('getRazorpayPublicKey callable failed, using env fallback:', err?.message || err);
+  }
+  if (FALLBACK_RAZORPAY_KEY_ID) return FALLBACK_RAZORPAY_KEY_ID;
+  throw new Error(
+    'Razorpay Test Key ID is not configured. Deploy the payment functions and set the RAZORPAY_KEY_ID secret.',
+  );
+};
+
+/**
+ * 1. Create Razorpay Order — via backend ONLY.
+ * FEE FLOW: the ONLY client input is feeId. The backend loads the
+ * authoritative fee record, authorizes the caller, derives the payable
+ * server-side and returns the REAL Razorpay-issued order (order_...).
+ * Any client amount/tenant/identity field is REJECTED server-side, so this
+ * function deliberately sends no amounts at all. Throws on failure so
+ * Checkout never opens with a fake or missing order id.
+ */
+export const createRazorpayOrder = async ({ feeId }) => {
+  if (!feeId) {
+    throw new Error('A fee identifier is required to create an order.');
+  }
+  let res;
+  try {
+    res = await fn(RAZORPAY_FUNCTIONS.createOrder)({ feeId });
+  } catch (err) {
+    throw new Error(extractCallableMessage(err, 'Failed to create Razorpay order. Please try again.'));
+  }
+  const order = res?.data;
+  if (!order?.id || !String(order.id).startsWith('order_')) {
+    throw new Error('Backend did not return a valid Razorpay order id.');
+  }
+  return order;
+};
+
+/**
+ * 1b. Create Subscription Order — via backend ONLY. Same authority model:
+ * the ONLY client input is subId; the plan amount comes from
+ * subscriptions/{subId} server-side. Superadmin-only.
+ */
+export const createSubscriptionOrder = async ({ subId }) => {
+  if (!subId) {
+    throw new Error('A subscription identifier is required to create an order.');
+  }
+  let res;
+  try {
+    res = await fn(RAZORPAY_FUNCTIONS.createSubscriptionOrder)({ subId });
+  } catch (err) {
+    throw new Error(extractCallableMessage(err, 'Failed to create subscription order. Please try again.'));
+  }
+  const order = res?.data;
+  if (!order?.id || !String(order.id).startsWith('order_')) {
+    throw new Error('Backend did not return a valid Razorpay order id.');
+  }
+  return order;
+};
+
+/**
+ * Extract a human-readable message from a callable HttpsError.
+ */
+export const extractCallableMessage = (err, fallback) => {
+  const details = err?.details;
+  if (typeof details === 'string' && details.trim()) return details;
+  const message = err?.message || '';
+  // firebase/functions prefixes callable failures; prefer the server message.
+  const match = message.match(/(invalid-argument|failed-precondition|unauthenticated|permission-denied|internal|unavailable)\s*[:\-]?\s*(.+)$/i);
+  if (match && match[2]) return match[2].trim();
+  if (message && !/^internal$/i.test(message.trim())) return message;
+  return fallback;
+};
+
+/**
+ * 2. Verify payment signature — via backend ONLY.
+ * Sends ONLY identifiers + the RAW Razorpay triple (all required) to
+ * verifyRazorpayPayment. The backend HMAC-verifies, re-authorizes the caller,
+ * re-derives amounts, enforces order<->resource binding + idempotency, and —
+ * for subscriptions — renews server-side. Firestore writes happen ONLY there.
+ * This function throws on any rejection — the caller must NOT mark anything
+ * Paid when this rejects.
+ */
+export const verifyPaymentSignature = async ({
+  paymentId,
+  orderId,
+  signature,
+  feeId,
+  subId,
+}) => {
+  if (!paymentId || !orderId || !signature) {
+    throw new Error('Incomplete payment response from Razorpay. Missing payment id, order id or signature.');
+  }
+  const hasFee = feeId !== undefined && feeId !== null && feeId !== '';
+  const hasSub = subId !== undefined && subId !== null && subId !== '';
+  if ((hasFee && hasSub) || (!hasFee && !hasSub)) {
+    throw new Error('Exactly one of feeId or subId is required for verification.');
+  }
+  let res;
+  try {
+    res = await fn(RAZORPAY_FUNCTIONS.verifyPayment)({
+      orderId,
+      paymentId,
+      signature,
+      ...(hasFee ? { feeId } : { subId }),
+    });
+  } catch (err) {
+    throw new Error(extractCallableMessage(err, 'Payment signature verification failed.'));
+  }
+  if (!res?.data?.verified) {
+    throw new Error('Payment could not be verified by the server.');
+  }
+  return res.data;
+};
+
+/**
+ * Open Razorpay Checkout for a backend-created order and verify the result.
+ * Shared by fee payments and subscription renewals so both get real order_ids,
+ * mandatory server verification, cancellation handling and identical UX.
+ * Identity/amount context lives SERVER-side: the frontend passes only the
+ * resource id (feeId XOR subId) plus display metadata for the receipt.
+ */
+const openVerifiedCheckout = async ({
+  keyId,
+  orderData,
+  name,
+  description,
+  prefill,
+  resourceRef,
+  receiptMeta,
+  onSuccess,
+  onFailure,
+}) => {
+  const options = {
+    key: keyId,
+    amount: orderData.amount,
+    currency: orderData.currency,
+    name,
+    description,
+    order_id: orderData.id,
+    image: 'https://cdn-icons-png.flaticon.com/512/2991/2991148.png',
+    handler: async function (response) {
+      try {
+        // No fallbacks: a missing field means an unverifiable payment.
+        const verified = await verifyPaymentSignature({
+          paymentId: response?.razorpay_payment_id,
+          orderId: response?.razorpay_order_id || orderData.id,
+          signature: response?.razorpay_signature,
+          ...resourceRef,
+        });
+
+        // Firestore is already updated server-side; generate the PDF receipt.
+        try {
+          generateFeeReceiptPDF({
+            receiptNo: verified.txnId,
+            studentName: receiptMeta.studentName,
+            rollNo: receiptMeta.rollNo,
+            className: receiptMeta.className,
+            feeType: receiptMeta.feeType,
+            amount: verified.amountPaid,
+            paymentMethod: 'Online (Razorpay)',
+          });
+        } catch (pdfErr) {
+          console.warn('Receipt PDF generation failed:', pdfErr?.message || pdfErr);
+        }
+
+        onSuccess && onSuccess({
+          paymentId: verified.txnId,
+          orderId: verified.orderId,
+          signature: response?.razorpay_signature,
+          amount: verified.amountPaid,
+          status: verified.status,
+          expiryDate: verified.expiryDate,
+          ...receiptMeta.extra,
+        });
+      } catch (err) {
+        onFailure && onFailure(err);
+      }
+    },
+    prefill,
+    theme: { color: '#2563EB' },
+    modal: {
+      ondismiss: function () {
+        onFailure && onFailure(new Error('Payment window closed before completion. No amount was charged.'));
+      },
+    },
   };
+
+  const rzp = new window.Razorpay(options);
+  rzp.on('payment.failed', function (resp) {
+    const reason = resp?.error?.description || 'Payment failed. No amount was marked as paid.';
+    onFailure && onFailure(new Error(reason));
+  });
+  rzp.open();
 };
 
-/**
- * 2. Verify Payment Signature (Client/Server Side verification)
- */
-export const verifyPaymentSignature = async ({ paymentId, orderId, signature }) => {
-  // Verifies HMAC SHA256 (order_id + "|" + payment_id) against Razorpay Secret
-  if (paymentId && orderId && signature) {
-    return { verified: true, message: 'Signature authentic' };
-  }
-  // If fallback test mock
-  if (paymentId) {
-    return { verified: true, message: 'Test payment verified' };
-  }
-  return { verified: false, message: 'Invalid payment signature' };
-};
+// __PART3__ (openVerifiedCheckout ends above)
 
 /**
- * 3. Webhook Payload & Signature Verification (For automated async confirmation)
- */
-export const verifyWebhookSignature = async ({ payload, signature, secret = 'rzp_webhook_secret_key' }) => {
-  if (!signature) {
-    return { status: 'failed', error: 'Missing x-razorpay-signature header' };
-  }
-  // Simulated signature verification logic
-  return {
-    status: 'success',
-    event: payload.event || 'payment.captured',
-    paymentId: payload.payload?.payment?.entity?.id || `pay_${Date.now()}`,
-    orderId: payload.payload?.payment?.entity?.order_id || `order_${Date.now()}`,
-    verified: true,
-  };
-};
-
-/**
- * 4. Initiate Student Online Fee Payout via Razorpay Checkout
+ * 3. Initiate Student Online Fee Payout via Razorpay Checkout.
+ * Same signature/UI contract as before (extra amount/tenant/display args are
+ * accepted for backwards compatibility but NEVER sent to the backend):
+ * backend order (feeId only) -> Checkout with the REAL order_id ->
+ * server verification -> onSuccess ONLY when verified.
  */
 export const initiateFeePayout = async ({
   tenantId = 'tenant_gvis',
@@ -93,82 +268,57 @@ export const initiateFeePayout = async ({
   }
 
   try {
-    // 1. Create order
-    const orderData = await createRazorpayOrder({
-      amount,
-      receipt: `receipt_${feeId || Date.now()}`,
-      notes: { studentName, rollNo, className, feeType },
-    });
+    if (!feeId) {
+      throw new Error('A fee identifier is required to start the payment.');
+    }
 
-    const isLiveOrder = orderData.id && orderData.id.startsWith('order_live_');
-    const options = {
-      key: RAZORPAY_KEY_ID,
-      amount: orderData.amount,
-      currency: orderData.currency,
+    // 1. Real backend order for the AUTHORITATIVE payable (throws on failure —
+    //    Checkout never opens). Only the feeId leaves the browser.
+    const orderData = await createRazorpayOrder({ feeId });
+
+    const keyId = await getRazorpayKeyId();
+
+    // 2+3. Checkout with the REAL order_id, then server verification.
+    await openVerifiedCheckout({
+      keyId,
+      orderData,
       name: 'EduERP Pro — Online Fee Payment',
       description: `${feeType || 'Tuition Fee'} for ${studentName} (${rollNo || 'Student'})`,
-      ...(isLiveOrder ? { order_id: orderData.id } : {}),
-      image: 'https://cdn-icons-png.flaticon.com/512/2991/2991148.png',
-      handler: async function (response) {
-        const paymentId = response.razorpay_payment_id || `pay_test_${Date.now()}`;
-        const orderId = response.razorpay_order_id || orderData.id;
-        const signature = response.razorpay_signature || 'simulated_sig';
-
-        // 2. Verify signature
-        const verification = await verifyPaymentSignature({ paymentId, orderId, signature });
-        if (verification.verified) {
-          // 3. Record payment in feeService & auto generate PDF receipt
-          const recResult = await recordFeePayment(tenantId, {
-            feeId,
-            studentName,
-            rollNo,
-            className,
-            feeHead: feeType || 'Tuition & Exam Fee',
-            amountPaid: amount,
-            totalDue: totalDue || amount,
-            paymentMethod: 'Razorpay Online',
-            txnId: paymentId,
-          });
-
-          onSuccess && onSuccess({
-            paymentId,
-            orderId,
-            signature,
-            studentId,
-            amount,
-            status: recResult?.status || 'Paid',
-          });
-        } else {
-          onFailure && onFailure(new Error('Payment signature verification failed'));
-        }
-      },
       prefill: {
         name: studentName,
         email: parentEmail || 'parent@school.edu.in',
         contact: parentPhone || '9876543210',
       },
-      theme: {
-        color: '#2563EB',
+      resourceRef: { feeId },
+      receiptMeta: {
+        studentName,
+        rollNo,
+        className,
+        feeType: feeType || 'Tuition & Exam Fee',
+        extra: { studentId },
       },
-      modal: {
-        ondismiss: function () {
-          console.log('Payment modal dismissed by user');
-        },
-      },
-    };
-
-    const rzp = new window.Razorpay(options);
-    rzp.open();
+      onSuccess,
+      onFailure,
+    });
   } catch (err) {
     console.error('Razorpay payment error:', err);
     onFailure && onFailure(err);
   }
 };
 
+// __PART4__ (initiateFeePayout ends above)
+
 /**
- * 5. Initiate Platform SaaS Subscription Checkout
+ * 4. Initiate Platform SaaS Subscription Checkout.
+ * Secure path: real backend order for the AUTHORITATIVE plan amount from
+ * subscriptions/{subId} (superadmin-only) + mandatory server verification +
+ * server-side renewal. The browser never renews by itself.
+ * The caller passes subId (stable identifier — no Date.now ids). Legacy
+ * display args (tenantId/collegeName/planTier/amount) are accepted for UI
+ * text only and are NEVER sent to the backend.
  */
 export const initiatePlatformSubscriptionCheckout = async ({
+  subId,
   tenantId,
   collegeName,
   planTier,
@@ -185,45 +335,32 @@ export const initiatePlatformSubscriptionCheckout = async ({
   }
 
   try {
-    const orderData = await createRazorpayOrder({
-      amount,
-      receipt: `sub_${tenantId}_${Date.now()}`,
-      notes: { collegeName, planTier },
-    });
+    if (!subId) {
+      throw new Error('A subscription identifier is required to start the payment.');
+    }
 
-    const options = {
-      key: RAZORPAY_KEY_ID,
-      amount: orderData.amount,
-      currency: orderData.currency,
+    // One stable identifier end-to-end: subId -> order -> verify -> renewal.
+    const orderData = await createSubscriptionOrder({ subId });
+
+    const keyId = await getRazorpayKeyId();
+
+    await openVerifiedCheckout({
+      keyId,
+      orderData,
       name: 'EduERP SaaS Platform',
-      description: `${planTier} Plan Renewal for ${collegeName}`,
-      order_id: orderData.id,
-      image: 'https://cdn-icons-png.flaticon.com/512/2991/2991148.png',
-      handler: async function (response) {
-        onSuccess && onSuccess({
-          paymentId: response.razorpay_payment_id,
-          orderId: response.razorpay_order_id || orderData.id,
-          tenantId,
-          amount,
-          planTier,
-        });
+      description: `${planTier || 'Subscription'} Plan Renewal for ${collegeName || subId}`,
+      prefill: { name: collegeName, email: adminEmail },
+      resourceRef: { subId },
+      receiptMeta: {
+        studentName: collegeName || subId,
+        rollNo: tenantId || '',
+        className: 'SaaS Subscription',
+        feeType: `${planTier || 'Subscription'} Plan Renewal`,
+        extra: { tenantId, amount, planTier, subId },
       },
-      prefill: {
-        name: collegeName,
-        email: adminEmail,
-      },
-      theme: {
-        color: '#2563EB',
-      },
-      modal: {
-        ondismiss: function () {
-          onFailure && onFailure(new Error('Payment window closed'));
-        },
-      },
-    };
-
-    const rzp = new window.Razorpay(options);
-    rzp.open();
+      onSuccess,
+      onFailure,
+    });
   } catch (err) {
     console.error('Subscription checkout error:', err);
     onFailure && onFailure(err);

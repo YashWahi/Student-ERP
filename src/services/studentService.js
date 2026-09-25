@@ -1,22 +1,7 @@
 // src/services/studentService.js
 import { db } from '../config/firebase';
-import { collection, addDoc, doc, deleteDoc, getDocs, query, where, serverTimestamp } from 'firebase/firestore';
+import { collection, addDoc, doc, deleteDoc, getDoc, getDocs, updateDoc, query, where, serverTimestamp } from 'firebase/firestore';
 import { logAuditEvent } from './auditService';
-
-// Default Initial Data Seeds
-export const DEFAULT_STUDENT_PROFILE = {
-  name: 'Arjun Verma',
-  rollNo: 'GV-2026-001',
-  class: 'Class 10-A',
-  school: 'Green Valley International School',
-  parentName: 'Mr. Suresh Verma',
-  parentPhone: '+91 98765 43212',
-  parentEmail: 'parent@test.com',
-  bloodGroup: 'B+',
-  dob: '2011-05-14',
-  address: 'H-142, Sector 62, Noida, Uttar Pradesh',
-  emergencyContact: '+91 98765 43210',
-};
 
 export const DEFAULT_TIMETABLE = [
   { p: 1, day: 'Monday', time: '09:00 AM - 10:00 AM', subject: 'Mathematics', teacher: 'Mrs. Priya Sharma', room: 'Room 201', status: 'Completed' },
@@ -70,17 +55,21 @@ export const DEFAULT_RESULTS = [
   { id: 5, subject: 'Social Studies', marks: 90, max: 100, grade: 'A+', remarks: 'Very thorough map work & historical analysis' },
 ];
 
-export const DEFAULT_ATTENDANCE_LOGS = [
-  { id: 1, date: '13 Aug 2026', status: 'Present', checkIn: '08:45 AM', remarks: 'On Time' },
-  { id: 2, date: '12 Aug 2026', status: 'Present', checkIn: '08:50 AM', remarks: 'On Time' },
-  { id: 3, date: '11 Aug 2026', status: 'Present', checkIn: '08:42 AM', remarks: 'On Time' },
-  { id: 4, date: '10 Aug 2026', status: 'Absent', checkIn: '-', remarks: 'Approved Medical Leave' },
-  { id: 5, date: '09 Aug 2026', status: 'Present', checkIn: '08:48 AM', remarks: 'On Time' },
-];
+// Normalizes class identifiers so "Class 10-A" and "10-A" resolve to the same key.
+const normalizeClassKey = (value) =>
+  String(value || '').replace(/^class\s+/i, '').trim().replace(/\s+/g, '-').toLowerCase();
+
+const normalizeRollNo = (value) => String(value || '').trim().toUpperCase();
 
 // 1. Fetch Complete Student Portal Data from Firestore / Local Scoped Storage
-export const fetchStudentPortalData = async (studentId = 'student_001', tenantId = 'tenant_gvis', studentClass = 'Class 10-A') => {
+export const fetchStudentPortalData = async (
+  studentId = 'student_001',
+  tenantId = 'tenant_gvis',
+  studentClass = 'Class 10-A',
+  userContext = {}
+) => {
   const isDefault = tenantId === 'tenant_gvis';
+  const userEmail = String(userContext.email || '').trim().toLowerCase();
 
   try {
     // 1. Digital Notebook
@@ -173,28 +162,108 @@ export const fetchStudentPortalData = async (studentId = 'student_001', tenantId
       chatMsgs = isDefault ? DEFAULT_MESSAGES : [];
     }
 
-    // 6. Attendance Logs
+    // 6. Attendance Logs — authoritative source: Firestore `attendance` collection.
+    // Identity resolves dynamically: authenticated uid/email -> tenant student record -> rollNo.
     let attLogs = [];
     try {
-      const cleanClass = studentClass.replace('Class ', '');
-      const classAtt = JSON.parse(localStorage.getItem(`attendance_${tenantId}_${cleanClass}`) || localStorage.getItem(`attendance_${tenantId}_${studentClass}`) || '[]');
-      if (classAtt && classAtt.length > 0) {
-        attLogs = classAtt.map((att, idx) => {
-          const rec = (att.records || []).find(r => r.studentId === studentId || r.rollNo === 'GV-2026-001') || { status: 'Present' };
-          return {
-            id: idx + 1,
-            date: att.date || 'Today',
-            status: rec.status || 'Present',
-            checkIn: rec.status === 'Present' ? '08:45 AM' : '-',
-            remarks: rec.status === 'Present' ? 'On Time' : 'Absence Logged',
-          };
-        });
+      let rollNo = '';
+      let resolvedClass = studentClass;
+
+      try {
+        const ownRecord = await getDoc(doc(db, 'students', studentId));
+        if (ownRecord.exists()) {
+          const s = ownRecord.data();
+          if (!s.tenantId || s.tenantId === tenantId) {
+            rollNo = s.rollNo || s.admissionNo || '';
+            resolvedClass = s.class || s.className || resolvedClass;
+          }
+        }
+      } catch (e) {
+        console.warn('Student record lookup by uid failed:', e.message);
       }
-      if (attLogs.length === 0 && isDefault) {
-        attLogs = DEFAULT_ATTENDANCE_LOGS;
+
+      if (!rollNo) {
+        const qStudents = query(collection(db, 'students'), where('tenantId', '==', tenantId));
+        const studentsSnap = await getDocs(qStudents);
+        const match = studentsSnap.docs.find(d => {
+          const s = d.data();
+          const recordEmail = String(s.email || '').trim().toLowerCase();
+          return d.id === studentId
+            || s.uid === studentId
+            || (!!userEmail && recordEmail === userEmail);
+        });
+        if (match) {
+          const s = match.data();
+          rollNo = s.rollNo || s.admissionNo || '';
+          resolvedClass = s.class || s.className || resolvedClass;
+        }
+      }
+
+      const targetKey = normalizeClassKey(resolvedClass) || normalizeClassKey(studentClass);
+      const wantedRoll = normalizeRollNo(rollNo);
+
+      // Firestore: tenant-wide query, then normalized class + rollNo match (no composite index needed).
+      try {
+        const qAtt = query(collection(db, 'attendance'), where('tenantId', '==', tenantId));
+        const attSnap = await getDocs(qAtt);
+        const classDocs = attSnap.docs
+          .map(d => ({ id: d.id, ...d.data() }))
+          .filter(d => normalizeClassKey(d.classId || d.classKey) === targetKey)
+          .sort((a, b) => String(b.date || '').localeCompare(String(a.date || '')));
+
+        for (const attDoc of classDocs) {
+          const rec = (attDoc.records || []).find(r =>
+            (!!wantedRoll && normalizeRollNo(r.rollNo) === wantedRoll)
+            || r.studentId === studentId
+            || r.id === studentId
+          );
+          if (!rec || !rec.status) continue;
+          attLogs.push({
+            id: attDoc.id,
+            date: attDoc.date || '',
+            status: rec.status,
+            checkIn: rec.checkIn || '-',
+            remarks: rec.remarks || '-',
+          });
+        }
+      } catch (e) {
+        console.warn('Firestore attendance query failed:', e.message);
+      }
+
+      // Local fallback (same schema, written by teacherService) when Firestore has nothing yet.
+      if (attLogs.length === 0) {
+        const candidateKeys = [...new Set(
+          [resolvedClass, studentClass,
+            String(resolvedClass || '').replace(/^class\s+/i, ''),
+            String(studentClass || '').replace(/^class\s+/i, '')]
+            .filter(Boolean)
+        )];
+        const seenDates = new Set();
+        for (const key of candidateKeys) {
+          const local = JSON.parse(localStorage.getItem(`attendance_${tenantId}_${key}`) || '[]');
+          for (const att of local) {
+            if (!att || !att.date || seenDates.has(att.date)) continue;
+            const rec = (att.records || []).find(r =>
+              (!!wantedRoll && normalizeRollNo(r.rollNo) === wantedRoll)
+              || r.studentId === studentId
+              || r.id === studentId
+            );
+            if (!rec || !rec.status) continue;
+            seenDates.add(att.date);
+            attLogs.push({
+              id: `${att.date}`,
+              date: att.date,
+              status: rec.status,
+              checkIn: rec.checkIn || '-',
+              remarks: rec.remarks || '-',
+            });
+          }
+        }
+        attLogs.sort((a, b) => String(b.date).localeCompare(String(a.date)));
       }
     } catch (e) {
-      attLogs = isDefault ? DEFAULT_ATTENDANCE_LOGS : [];
+      console.warn('Error fetching attendance logs:', e.message);
+      attLogs = [];
     }
 
     // 7. Results & Marks
@@ -248,34 +317,54 @@ export const fetchStudentPortalData = async (studentId = 'student_001', tenantId
       exams = isDefault ? DEFAULT_EXAMS : [];
     }
 
-    // 10. Fees
-    let fees = [];
-    try {
-      const storedFees = localStorage.getItem(`collections_${tenantId}`);
-      if (storedFees) {
-        const myFees = JSON.parse(storedFees).filter(f => f.studentId === studentId || f.rollNo === 'GV-2026-001');
-        if (myFees.length > 0) {
-          fees = myFees.map((f, idx) => ({
-            id: f.id || `fee_${idx}`,
-            name: f.feeHead || 'Tuition & Exam Fee',
-            dueDate: f.dueDate || '25 August 2026',
-            amount: Number(f.totalDue || f.amount || 18500),
-            status: f.status || 'Pending',
-            breakdown: f.breakdown || 'Tuition & Laboratory fee',
-            paidOn: f.date,
-            receiptNo: f.txnId || f.receiptNo,
-          }));
+    
+    // 10. Fees — load authoritative fee records from Firestore
+      let fees = [];
+
+      try {
+        const feesQuery = query(
+          collection(db, 'fees'),
+          where('tenantId', '==', tenantId)
+        );
+
+        const feesSnapshot = await getDocs(feesQuery);
+
+        const matchingFees = feesSnapshot.docs
+          .map((feeDoc) => ({
+            id: feeDoc.id,
+            ...feeDoc.data(),
+          }))
+          .filter((fee) => {
+            return (
+              fee.rollNo === 'GV-2026-001' ||
+              fee.studentId === studentId
+            );
+          });
+
+        fees = matchingFees.map((fee) => ({
+          id: fee.id,
+          name: fee.feeHead || 'Tuition & Exam Fee',
+          dueDate: fee.dueDate || '25 August 2026',
+          amount: Number(
+            fee.totalDue ?? fee.amount ?? 0
+          ),
+          status: fee.status || 'Pending',
+          breakdown: fee.breakdown || 'Tuition & Laboratory fee',
+          paidOn: fee.date,
+          receiptNo: fee.txnId || fee.receiptNo,
+        }));
+
+        // Keep the old demo fallback only if Firestore has no matching fee.
+        if (fees.length === 0 && isDefault) {
+          fees = DEFAULT_FEES;
         }
+      } catch (e) {
+        console.warn('Firestore fees fetch failed:', e.message);
+        fees = isDefault ? DEFAULT_FEES : [];
       }
-      if (fees.length === 0 && isDefault) {
-        fees = DEFAULT_FEES;
-      }
-    } catch (e) {
-      fees = isDefault ? DEFAULT_FEES : [];
-    }
 
     return {
-      profile: DEFAULT_STUDENT_PROFILE,
+      profile: null,
       timetable,
       exams,
       homework: hwList.map(hw => {
@@ -292,7 +381,7 @@ export const fetchStudentPortalData = async (studentId = 'student_001', tenantId
   } catch (err) {
     console.warn('Firestore fetchStudentPortalData fallback:', err.message);
     return {
-      profile: DEFAULT_STUDENT_PROFILE,
+      profile: null,
       timetable: isDefault ? DEFAULT_TIMETABLE : [],
       exams: isDefault ? DEFAULT_EXAMS : [],
       homework: isDefault ? DEFAULT_HOMEWORK : [],
@@ -301,9 +390,131 @@ export const fetchStudentPortalData = async (studentId = 'student_001', tenantId
       fees: isDefault ? DEFAULT_FEES : [],
       messages: isDefault ? DEFAULT_MESSAGES : [],
       results: isDefault ? DEFAULT_RESULTS : [],
-      attendance: isDefault ? DEFAULT_ATTENDANCE_LOGS : [],
+      attendance: [],
     };
   }
+};
+
+// 1b. Fetch the authenticated student's SIS record from Firestore `students`.
+// Matched by tenant + student email (or doc id == uid). Returns null when the
+// tenant has no record for this identity — callers must render neutral
+// placeholders instead of fabricating values.
+export const fetchStudentRecord = async (tenantId = 'tenant_gvis', { uid = '', email = '' } = {}) => {
+  try {
+    const snap = await getDocs(query(collection(db, 'students'), where('tenantId', '==', tenantId)));
+    const cleanEmail = String(email || '').trim().toLowerCase();
+    const match = snap.docs.find(d => {
+      const s = d.data() || {};
+      return (cleanEmail && String(s.email || '').trim().toLowerCase() === cleanEmail) || (uid && d.id === uid);
+    });
+    return match ? { id: match.id, ...match.data() } : null;
+  } catch (err) {
+    console.warn('Firestore fetchStudentRecord fallback:', err.message);
+    return null;
+  }
+};
+
+// 1c. Persist the student's editable profile fields to authoritative records:
+// - Firestore `students` doc (matched by tenant + email/uid) — only fields that
+//   exist in the admitStudent schema: name, parentName, parentPhone, address.
+// - Firestore `users/{uid}` name when it changed and the doc exists.
+// Fields absent from the Firestore students schema (e.g. bloodGroup) are NOT
+// invented here — they are persisted in the local roster store by the caller.
+export const updateStudentProfile = async ({ tenantId = 'tenant_gvis', uid = '', email = '', updates = {} }) => {
+  const result = { studentDocUpdated: false, userDocUpdated: false };
+  const schemaFields = ['name', 'parentName', 'parentPhone', 'address'];
+
+  try {
+    const snap = await getDocs(query(collection(db, 'students'), where('tenantId', '==', tenantId)));
+    const cleanEmail = String(email || '').trim().toLowerCase();
+    const match = snap.docs.find(d => {
+      const s = d.data() || {};
+      return (cleanEmail && String(s.email || '').trim().toLowerCase() === cleanEmail) || (uid && d.id === uid);
+    });
+    if (match) {
+      const payload = {};
+      schemaFields.forEach((field) => {
+        if (typeof updates[field] === 'string') payload[field] = updates[field];
+      });
+      if (Object.keys(payload).length > 0) {
+        payload.updatedAt = serverTimestamp();
+        await updateDoc(doc(db, 'students', match.id), payload);
+        result.studentDocUpdated = true;
+      }
+    }
+  } catch (err) {
+    console.warn('Firestore updateStudentProfile (students):', err.message);
+  }
+
+  if (uid && typeof updates.name === 'string' && updates.name.trim()) {
+    try {
+      const userSnap = await getDoc(doc(db, 'users', uid));
+      if (userSnap.exists() && String(userSnap.data().name || '').trim() !== updates.name.trim()) {
+        await updateDoc(doc(db, 'users', uid), { name: updates.name });
+        result.userDocUpdated = true;
+      }
+    } catch (err) {
+      console.warn('Firestore updateStudentProfile (users):', err.message);
+    }
+  }
+
+  return result;
+};
+
+// 5b. Load the quiz questions available to a student from the tenant's
+// Firestore `questionBank`, together with the student's own latest attempt.
+//
+// SECURITY: correct answers (correctIndex) and explanations are split out of
+// the returned question list so the Student Portal render state never holds
+// them before submission. Callers must keep `answerKey` out of React state.
+// Only MCQ-capable questions (options + valid correctIndex) are returned;
+// text-only questions are excluded from the online quiz.
+export const fetchStudentQuizData = async (tenantId = 'tenant_gvis', studentId = '') => {
+  const result = { questions: [], answerKey: {}, latestAttempt: null };
+
+  try {
+    const snap = await getDocs(query(collection(db, 'questionBank'), where('tenantId', '==', tenantId)));
+    const mcq = snap.docs
+      .map(d => ({ id: d.id, ...d.data() }))
+      .filter(q => Array.isArray(q.options) && q.options.length >= 2
+        && typeof q.correctIndex === 'number'
+        && q.correctIndex >= 0
+        && q.correctIndex < q.options.length);
+
+    const answerKey = {};
+    mcq.forEach(q => {
+      answerKey[q.id] = { correctIndex: q.correctIndex, explanation: q.explanation || '' };
+    });
+    result.answerKey = answerKey;
+    // Strip correct answers/explanations out of the student-facing question list.
+    result.questions = mcq.map(({ correctIndex: _correctIndex, explanation: _explanation, ...safeQuestion }) => safeQuestion);
+  } catch (err) {
+    console.warn('Firestore fetchStudentQuizData (questions):', err.message);
+  }
+
+  if (studentId) {
+    try {
+      // Single-field query on studentId (no composite index required);
+      // tenant isolation is enforced by filtering on the fetched documents.
+      const snap = await getDocs(query(collection(db, 'quizResults'), where('studentId', '==', studentId)));
+      const attempts = snap.docs
+        .map(d => ({ id: d.id, ...d.data() }))
+        .filter(a => a.tenantId === tenantId);
+      attempts.sort((a, b) => {
+        const timeOf = (attempt) => {
+          if (!attempt.submittedAt) return 0;
+          if (typeof attempt.submittedAt.toMillis === 'function') return attempt.submittedAt.toMillis();
+          return 0;
+        };
+        return timeOf(b) - timeOf(a);
+      });
+      result.latestAttempt = attempts[0] || null;
+    } catch (err) {
+      console.warn('Firestore fetchStudentQuizData (attempts):', err.message);
+    }
+  }
+
+  return result;
 };
 
 // 2. Submit Homework File / Text

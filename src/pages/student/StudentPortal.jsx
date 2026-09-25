@@ -1,5 +1,5 @@
 // src/pages/student/StudentPortal.jsx
-import { useState, useEffect, useMemo, useCallback } from 'react';
+import { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import {
   GraduationCap, Clock, CheckCircle2, BookOpen, Award, CreditCard,
@@ -12,49 +12,39 @@ import { initiateFeePayout } from '../../services/razorpayService';
 import { generateFeeReceiptPDF, generateStudentIDCardPDF } from '../../services/pdfService';
 import {
   fetchStudentPortalData,
+  fetchStudentRecord,
+  fetchStudentQuizData,
+  updateStudentProfile,
   submitHomeworkFile,
   saveStudentNotebookNote,
   deleteStudentNotebookNote,
   submitOnlineQuiz,
   sendTeacherMessage,
-  DEFAULT_STUDENT_PROFILE,
   DEFAULT_TIMETABLE,
   DEFAULT_EXAMS
 } from '../../services/studentService';
 import { useAuthStore } from '../../store/authStore';
 import { useStudentStore } from '../../store/studentStore';
+import { doc, getDocFromServer } from 'firebase/firestore';
+import { db } from '../../config/firebase';
 import toast from 'react-hot-toast';
 
-const QUIZ_QUESTIONS = [
-  {
-    id: 1,
-    question: 'What is the discriminant formula for a quadratic equation ax² + bx + c = 0?',
-    options: ['b² - 4ac', 'b² + 4ac', '2a / (-b)', 'a² + b²'],
-    correctIndex: 0,
-    explanation: 'The discriminant D = b² - 4ac determines the nature of the roots of a quadratic equation.'
-  },
-  {
-    id: 2,
-    question: 'If the discriminant D > 0 and a perfect square, the roots of the quadratic equation are:',
-    options: ['Real, Rational, and Unequal', 'Real and Equal', 'Imaginary / Complex', 'Zero'],
-    correctIndex: 0,
-    explanation: 'When D > 0 and is a perfect square, the square root √D is rational, yielding two distinct rational roots.'
-  },
-  {
-    id: 3,
-    question: 'What is the sum of the roots (α + β) of the quadratic equation ax² + bx + c = 0?',
-    options: ['-b / a', 'c / a', 'b / a', '-c / a'],
-    correctIndex: 0,
-    explanation: 'According to Vieta\'s formulas, α + β = -b/a and α · β = c/a.'
-  },
-  {
-    id: 4,
-    question: 'What is the product of the roots (α · β) of the quadratic equation ax² + bx + c = 0?',
-    options: ['c / a', '-b / a', 'b / a', 'a / c'],
-    correctIndex: 0,
-    explanation: 'According to Vieta\'s formulas, the product of roots α · β = c/a.'
-  }
-];
+// Neutral placeholder for profile fields with no authoritative value.
+const displayValue = (value) => {
+  const text = value === undefined || value === null ? '' : String(value).trim();
+  return text === '' ? 'Not provided' : text;
+};
+
+// Formats an attempt timestamp (Firestore Timestamp, ISO string, or seconds).
+const formatAttemptTime = (value) => {
+  if (!value) return '';
+  try {
+    if (typeof value.toMillis === 'function') return new Date(value.toMillis()).toLocaleString();
+    if (typeof value === 'object' && typeof value.seconds === 'number') return new Date(value.seconds * 1000).toLocaleString();
+    if (typeof value === 'string') return value;
+  } catch { /* ignore malformed timestamps */ }
+  return '';
+};
 
 const pathToTabMap = {
   '/student': 'home',
@@ -99,9 +89,9 @@ const StudentPortal = () => {
   const [loading, setLoading] = useState(true);
 
   // Authentication Context
-  const { user, userProfile, tenantId: activeTenantId } = useAuthStore();
+  const { user, userProfile, tenantId: activeTenantId, setUserProfile } = useAuthStore();
   const currentTenant = userProfile?.tenantId || activeTenantId || 'tenant_gvis';
-  const { students: storeStudents } = useStudentStore();
+  const { students: storeStudents, updateStudent } = useStudentStore();
 
   // Dynamic Student Matching
   const matchedStoreStudent = useMemo(() => {
@@ -115,7 +105,7 @@ const StudentPortal = () => {
   }, [storeStudents, user, userProfile]);
 
   // Main Interactive Data States
-  const [profile, setProfile] = useState(DEFAULT_STUDENT_PROFILE);
+  const [profile, setProfile] = useState({});
   const [timetableList, setTimetableList] = useState([]);
   const [homeworkList, setHomeworkList] = useState([]);
   const [notesList, setNotesList] = useState([]);
@@ -160,39 +150,63 @@ const StudentPortal = () => {
   const [leaveReason, setLeaveReason] = useState('');
 
   // Profile Form State
-  const [editProfile, setEditProfile] = useState({ ...DEFAULT_STUDENT_PROFILE });
+  const [editProfile, setEditProfile] = useState({});
 
-  // Online Quiz State
+  // Online Quiz State (questions loaded from Firestore questionBank;
+  // the answer key lives in quizKeyRef — never in render state — so correct
+  // answers are not exposed before submission)
   const [quizAnswers, setQuizAnswers] = useState({});
   const [quizSubmitted, setQuizSubmitted] = useState(false);
   const [quizScore, setQuizScore] = useState(null);
+  const [quizQuestions, setQuizQuestions] = useState([]);
+  const [latestAttempt, setLatestAttempt] = useState(null);
+  const quizKeyRef = useRef({});
 
   // Fetch Firestore Data on Mount
   const loadPortalData = useCallback(async () => {
     setLoading(true);
     const studentId = user?.uid || matchedStoreStudent?.id || 'std_101';
     const studentClass = matchedStoreStudent?.class || userProfile?.class || 'Class 10-A';
-    const data = await fetchStudentPortalData(studentId, currentTenant, studentClass);
-    
-    const studentDisplayName = userProfile?.name || matchedStoreStudent?.name || user?.displayName || (user?.email ? user.email.split('@')[0] : 'Arjun Verma');
-    const institutionName = userProfile?.schoolName || (currentTenant === 'tenant_gvis' ? 'Green Valley International School' : 'Campus Institution');
-    
+    const [data, fsStudent, quizData] = await Promise.all([
+      fetchStudentPortalData(studentId, currentTenant, studentClass, { email: user?.email }),
+      fetchStudentRecord(currentTenant, { uid: user?.uid, email: user?.email }),
+      fetchStudentQuizData(currentTenant, user?.uid || ''),
+    ]);
+
+    // Authoritative identity chain: users/{uid} (auth) → Firestore `students`
+    // record → local roster store → authenticated auth data. Missing fields
+    // stay empty and render as a neutral placeholder — never fabricated values.
+    const emailName = user?.email ? user.email.split('@')[0] : '';
+    const studentDisplayName =
+      userProfile?.name ||
+      fsStudent?.name ||
+      matchedStoreStudent?.name ||
+      user?.displayName ||
+      emailName;
+
     const resolvedProfile = {
-      name: studentDisplayName,
-      rollNo: matchedStoreStudent?.rollNo || matchedStoreStudent?.admissionNo || 'GV-2026-001',
-      class: matchedStoreStudent?.class ? `Class ${matchedStoreStudent.class.replace('Class ', '')}` : 'Class 10-A',
-      school: institutionName,
-      parentName: matchedStoreStudent?.parentName || 'Mr. Suresh Verma',
-      parentPhone: matchedStoreStudent?.phone || '+91 98765 43212',
-      parentEmail: matchedStoreStudent?.parentEmail || 'parent@test.com',
-      bloodGroup: matchedStoreStudent?.bloodGroup || 'B+',
-      dob: matchedStoreStudent?.dob || '2011-05-14',
-      address: matchedStoreStudent?.address || 'H-142, Sector 62, Noida, Uttar Pradesh',
-      emergencyContact: matchedStoreStudent?.phone || '+91 98765 43210',
+      name: studentDisplayName || '',
+      rollNo: fsStudent?.rollNo || matchedStoreStudent?.rollNo || matchedStoreStudent?.admissionNo || fsStudent?.admissionNo || '',
+      class: matchedStoreStudent?.class
+        ? `Class ${String(matchedStoreStudent.class).replace('Class ', '')}`
+        : (fsStudent?.classId || ''),
+      school: userProfile?.schoolName || '',
+      parentName: fsStudent?.parentName || matchedStoreStudent?.parentName || '',
+      parentPhone: fsStudent?.parentPhone || matchedStoreStudent?.phone || matchedStoreStudent?.parentPhone || '',
+      parentEmail: matchedStoreStudent?.parentEmail || '',
+      bloodGroup: matchedStoreStudent?.bloodGroup || '',
+      dob: fsStudent?.dob || matchedStoreStudent?.dob || '',
+      address: fsStudent?.address || matchedStoreStudent?.address || '',
+      emergencyContact: fsStudent?.phone || matchedStoreStudent?.phone || '',
+      email: user?.email || userProfile?.email || '',
+      avatar: userProfile?.avatar || '',
     };
 
     setProfile(resolvedProfile);
     setEditProfile(resolvedProfile);
+    setQuizQuestions(quizData.questions || []);
+    quizKeyRef.current = quizData.answerKey || {};
+    setLatestAttempt(quizData.latestAttempt || null);
     setTimetableList(data.timetable || DEFAULT_TIMETABLE);
     setHomeworkList(data.homework || []);
     setNotesList(data.notes || []);
@@ -214,17 +228,31 @@ const StudentPortal = () => {
   const pendingFees = useMemo(() => feeList.filter(f => f.status === 'Pending'), [feeList]);
   const totalPendingFeeAmount = useMemo(() => pendingFees.reduce((acc, f) => acc + Number(f.amount || 0), 0), [pendingFees]);
 
-  // Computed Dynamic Attendance %
+  // Computed Dynamic Attendance (authoritative: Firestore attendance logs)
+  // Policy: attendedDays = Present + Late; absentDays = Absent;
+  // workingDays = attendedDays + absentDays; percentage null when no working days.
+  const attendanceMetrics = useMemo(() => {
+    const counted = attendanceLogs.filter(l =>
+      !l.pendingLeave && (l.status === 'Present' || l.status === 'Late' || l.status === 'Absent')
+    );
+    const attendedDays = counted.filter(l => l.status === 'Present' || l.status === 'Late').length;
+    const absentDays = counted.filter(l => l.status === 'Absent').length;
+    const workingDays = attendedDays + absentDays;
+    const attendancePct = workingDays === 0 ? null : Math.round((attendedDays / workingDays) * 100);
+    return { workingDays, attendedDays, absentDays, attendancePct };
+  }, [attendanceLogs]);
+
   const monthlyAttendancePct = useMemo(() => {
-    if (attendanceLogs.length > 0) {
-      const present = attendanceLogs.filter(l => l.status === 'Present').length;
-      return `${Math.round((present / attendanceLogs.length) * 100)}%`;
-    }
-    if (matchedStoreStudent?.attendance) {
-      return String(matchedStoreStudent.attendance).includes('%') ? matchedStoreStudent.attendance : `${matchedStoreStudent.attendance}%`;
-    }
-    return '96%';
-  }, [attendanceLogs, matchedStoreStudent]);
+    const currentMonth = new Date().toISOString().slice(0, 7);
+    const counted = attendanceLogs.filter(l =>
+      !l.pendingLeave
+      && String(l.date || '').startsWith(currentMonth)
+      && (l.status === 'Present' || l.status === 'Late' || l.status === 'Absent')
+    );
+    if (counted.length === 0) return null;
+    const attended = counted.filter(l => l.status === 'Present' || l.status === 'Late').length;
+    return Math.round((attended / counted.length) * 100);
+  }, [attendanceLogs]);
 
   // Computed Dynamic Latest GPA
   const latestGPA = useMemo(() => {
@@ -279,16 +307,40 @@ const StudentPortal = () => {
       feeType: feeToPay.name,
       parentEmail: profile.parentEmail || 'parent@school.edu',
       parentPhone: profile.parentPhone || '+91 98765 43210',
-      onSuccess: (res) => {
-        setFeeList(prev => prev.map(f => f.id === feeToPay.id ? { ...f, status: 'Paid', paidOn: new Date().toLocaleDateString('en-IN'), receiptNo: res.paymentId } : f));
-        toast.success(`🎉 Payment of ₹${feeToPay.amount.toLocaleString()} Successful! Receipt ID: ${res.paymentId}`);
+      onSuccess: async (res) => {
+        // verifyRazorpayPayment has already succeeded at this point. Refresh
+        // from the authoritative backend verdict/Firestore document—not from
+        // Checkout success and not from the pre-payment fee-list copy.
+        let verifiedFee = null;
+        try {
+          const feeSnapshot = await getDocFromServer(doc(db, 'fees', feeToPay.id));
+          if (feeSnapshot.exists()) {
+            verifiedFee = { id: feeSnapshot.id, ...feeSnapshot.data() };
+          }
+        } catch (refreshError) {
+          console.warn('Verified fee refresh failed:', refreshError?.message || refreshError);
+        }
+        if (verifiedFee?.status === 'Paid') {
+          setFeeList((prev) => prev.map((fee) => (fee.id === feeToPay.id ? {
+            ...fee,
+            status: verifiedFee.status,
+            paidOn: new Date(verifiedFee.paidAt || Date.now()).toLocaleDateString('en-IN'),
+            receiptNo: verifiedFee.txnId || res.paymentId,
+          } : fee)));
+        } else {
+          // Fall back to the existing portal reload only when the paid document
+          // could not be read directly. This still does not mark anything Paid.
+          await loadPortalData();
+        }
+        const verifiedAmount = Number(res.amount ?? feeToPay.amount);
+        toast.success(`🎉 Payment of ₹${verifiedAmount.toLocaleString()} Successful! Receipt ID: ${res.paymentId}`);
         generateFeeReceiptPDF({
           receiptNo: res.paymentId,
           studentName: profile.name,
           rollNo: profile.rollNo,
           className: profile.class,
           feeType: feeToPay.name,
-          amount: feeToPay.amount,
+          amount: verifiedAmount,
         });
       },
       onFailure: () => toast.error('Payment process cancelled'),
@@ -370,33 +422,50 @@ const StudentPortal = () => {
   };
 
   const handleQuizSubmit = async () => {
-    if (Object.keys(quizAnswers).length < QUIZ_QUESTIONS.length) {
+    if (quizQuestions.length === 0) return;
+    if (Object.keys(quizAnswers).length < quizQuestions.length) {
       toast.error('Please answer all quiz questions before submitting!');
       return;
     }
+    if (!user?.uid) {
+      toast.error('You must be signed in to submit a quiz attempt.');
+      return;
+    }
 
+    // Grade against the answer key kept outside render state (Firestore-sourced).
     let correctCount = 0;
-    QUIZ_QUESTIONS.forEach(q => {
-      if (quizAnswers[q.id] === q.correctIndex) {
-        correctCount += 1;
-      }
+    quizQuestions.forEach(q => {
+      const key = quizKeyRef.current[q.id];
+      if (key && quizAnswers[q.id] === key.correctIndex) correctCount += 1;
     });
 
-    const calculatedScore = Math.round((correctCount / QUIZ_QUESTIONS.length) * 100);
+    const calculatedScore = Math.round((correctCount / quizQuestions.length) * 100);
     setQuizScore(calculatedScore);
     setQuizSubmitted(true);
 
-    await submitOnlineQuiz({
+    const subjects = [...new Set(quizQuestions.map(q => q.sub).filter(Boolean))];
+    const quizTitle = subjects.length > 0 ? `${subjects.join(' & ')} Quiz` : 'Online Quiz';
+
+    const res = await submitOnlineQuiz({
       tenantId: currentTenant,
-      studentId: user?.uid || profile.rollNo || 'std_101',
-      studentName: profile.name,
-      quizTitle: 'Mathematics Discriminant & Quadratic Assessment',
+      studentId: user.uid,
+      studentName: profile.name || userProfile?.name || user.email || 'Student',
+      quizTitle,
       score: calculatedScore,
       correctCount,
-      totalQuestions: QUIZ_QUESTIONS.length,
+      totalQuestions: quizQuestions.length,
     });
 
-    toast.success(`🎉 Assessment Submitted! Score: ${calculatedScore}% (${correctCount}/${QUIZ_QUESTIONS.length} Correct)`);
+    setLatestAttempt({
+      id: res?.id,
+      quizTitle,
+      score: calculatedScore,
+      correctCount,
+      totalQuestions: quizQuestions.length,
+      submittedAt: new Date().toISOString(),
+    });
+
+    toast.success(`🎉 Assessment Submitted! Score: ${calculatedScore}% (${correctCount}/${quizQuestions.length} Correct)`);
   };
 
   const handleRetakeQuiz = () => {
@@ -440,11 +509,12 @@ const StudentPortal = () => {
     }
 
     const newLog = {
-      id: Date.now(),
+      id: `leave_${Date.now()}`,
       date: `${leaveFrom}${leaveTo ? ' to ' + leaveTo : ''}`,
       status: 'Absent',
       checkIn: '-',
       remarks: `Leave Requested: ${leaveReason}`,
+      pendingLeave: true,
     };
 
     setAttendanceLogs(prev => [newLog, ...prev]);
@@ -455,9 +525,47 @@ const StudentPortal = () => {
     setLeaveReason('');
   };
 
-  const handleSaveProfile = (e) => {
+  const handleSaveProfile = async (e) => {
     e.preventDefault();
-    setProfile({ ...editProfile });
+    if (!user?.uid) {
+      toast.error('Session expired. Please sign in again to edit your profile.');
+      return;
+    }
+
+    const updates = {
+      name: String(editProfile.name || '').trim(),
+      parentName: String(editProfile.parentName || '').trim(),
+      parentPhone: String(editProfile.parentPhone || '').trim(),
+      bloodGroup: String(editProfile.bloodGroup || '').trim(),
+      address: String(editProfile.address || '').trim(),
+    };
+
+    if (!updates.name) {
+      toast.error('Full name is required.');
+      return;
+    }
+
+    // 1. Persist schema-backed fields to the authoritative Firestore records
+    //    (students doc matched by tenant + email/uid, users/{uid} name).
+    try {
+      await updateStudentProfile({ tenantId: currentTenant, uid: user.uid, email: user.email, updates });
+    } catch (err) {
+      console.warn('Profile Firestore save notice:', err?.message);
+    }
+
+    // 2. Persist to the local roster store (source for roster-only fields such
+    //    as bloodGroup) so the values survive refresh for roster students.
+    if (matchedStoreStudent?.id) {
+      updateStudent(matchedStoreStudent.id, updates);
+    }
+
+    // 3. Keep the auth session profile in sync so the name refreshes instantly.
+    if (userProfile && updates.name !== userProfile.name) {
+      setUserProfile({ ...userProfile, name: updates.name });
+    }
+
+    setProfile(prev => ({ ...prev, ...updates }));
+    setEditProfile(prev => ({ ...prev, ...updates }));
     toast.success('👤 Profile details updated successfully!');
     setShowProfileModal(false);
   };
@@ -486,10 +594,10 @@ const StudentPortal = () => {
               STUDENT LEARNING PLATFORM
             </div>
             <h1 style={{ fontSize: '1.6rem', fontWeight: 900, color: '#0F172A', marginTop: 2, margin: '2px 0 0' }}>
-              {greetingTime}, {profile.name} 👋
+              {greetingTime}, {displayValue(profile.name)} 👋
             </h1>
             <p style={{ fontSize: '0.85rem', color: '#64748B', marginTop: 3, margin: '3px 0 0' }}>
-              {profile.class} · Roll No: {profile.rollNo} · {profile.school}
+              {displayValue(profile.class)} · Roll No: {displayValue(profile.rollNo)} · {displayValue(profile.school)}
             </p>
           </div>
 
@@ -550,7 +658,7 @@ const StudentPortal = () => {
       {activeTab === 'home' && (
         <div>
           <div className="grid-3" style={{ gap: 20, marginBottom: 24 }}>
-            <StatCard icon={<CheckCircle2 size={22} />} label="Monthly Attendance %" value={monthlyAttendancePct} color="#16A34A" />
+            <StatCard icon={<CheckCircle2 size={22} />} label="Monthly Attendance %" value={monthlyAttendancePct !== null ? `${monthlyAttendancePct}%` : '—'} color="#16A34A" />
             <StatCard icon={<BookOpen size={22} />} label="Pending Homework" value={`${pendingHomework.length} tasks`} color={pendingHomework.length ? "#D97706" : "#16A34A"} />
             <StatCard icon={<Award size={22} />} label="Latest Exam GPA" value={latestGPA} color="var(--color-primary, #2563EB)" />
           </div>
@@ -1092,17 +1200,30 @@ const StudentPortal = () => {
         <div className="card" style={{ padding: 24 }}>
           <div className="flex justify-between items-center" style={{ marginBottom: 20, flexWrap: 'wrap', gap: 12 }}>
             <div>
-              <h4 style={{ margin: 0, fontSize: '1.05rem', fontWeight: 800, color: '#0F172A' }}>⚡ Diagnostic Assessment Quiz</h4>
-              <p style={{ fontSize: '0.8rem', color: '#64748B', margin: '2px 0 0' }}>Instant auto-graded diagnostic assessment</p>
+              <h4 style={{ margin: 0, fontSize: '1.05rem', fontWeight: 800, color: '#0F172A' }}>⚡ Assessment Quiz</h4>
+              <p style={{ fontSize: '0.8rem', color: '#64748B', margin: '2px 0 0' }}>Auto-graded from your class question bank</p>
             </div>
-            {quizSubmitted && (
-              <button className="btn btn-secondary btn-sm" onClick={handleRetakeQuiz}>
-                <RefreshCw size={14} /> Retake Quiz
-              </button>
-            )}
+            <div className="flex items-center gap-2" style={{ flexWrap: 'wrap' }}>
+              {latestAttempt && (
+                <span className="badge badge-primary" title={formatAttemptTime(latestAttempt.submittedAt)}>
+                  Previous attempt: {latestAttempt.score}%
+                </span>
+              )}
+              {quizSubmitted && (
+                <button className="btn btn-secondary btn-sm" onClick={handleRetakeQuiz}>
+                  <RefreshCw size={14} /> Retake Quiz
+                </button>
+              )}
+            </div>
           </div>
 
-          {quizSubmitted ? (
+          {quizQuestions.length === 0 ? (
+            <div style={{ padding: 40, textAlign: 'center', color: '#64748B' }}>
+              <Sparkles size={36} style={{ marginBottom: 8, opacity: 0.5 }} />
+              <p style={{ margin: 0, fontWeight: 700, color: '#0F172A' }}>No quizzes available</p>
+              <p style={{ margin: '6px 0 0', fontSize: '0.85rem' }}>Your teachers have not published any quiz questions yet. Check back later!</p>
+            </div>
+          ) : quizSubmitted ? (
             <div style={{ padding: 24, borderRadius: 10, border: '1px solid #E2E8F0', backgroundColor: '#F8FAFC' }}>
               <div style={{ textAlign: 'center', marginBottom: 24 }}>
                 <span className={`badge ${quizScore >= 70 ? 'badge-success' : 'badge-warning'}`} style={{ fontSize: '1.1rem', padding: '8px 16px' }}>
@@ -1114,23 +1235,26 @@ const StudentPortal = () => {
               </div>
 
               <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-                {QUIZ_QUESTIONS.map((q, qIdx) => {
+                {quizQuestions.map((q, qIdx) => {
                   const userAns = quizAnswers[q.id];
-                  const isCorrect = userAns === q.correctIndex;
+                  const key = quizKeyRef.current[q.id] || {};
+                  const isCorrect = key.correctIndex !== undefined && userAns === key.correctIndex;
                   return (
                     <div key={q.id} style={{ padding: 16, border: '1px solid #E2E8F0', borderRadius: 8, backgroundColor: isCorrect ? '#F0FDF4' : '#FEF2F2' }}>
-                      <p style={{ fontWeight: 700, fontSize: '0.9rem', marginBottom: 8, color: '#0F172A' }}>Q{qIdx + 1}. {q.question}</p>
+                      <p style={{ fontWeight: 700, fontSize: '0.9rem', marginBottom: 8, color: '#0F172A' }}>Q{qIdx + 1}. {q.question || q.q}</p>
                       <div style={{ fontSize: '0.82rem', color: isCorrect ? '#15803D' : '#B91C1C' }}>
                         Your Choice: <strong>{q.options[userAns]}</strong> {isCorrect ? '✓ Correct' : '❌ Incorrect'}
                       </div>
-                      {!isCorrect && (
+                      {!isCorrect && key.correctIndex !== undefined && (
                         <div style={{ fontSize: '0.82rem', color: '#15803D', marginTop: 4 }}>
-                          Correct Answer: <strong>{q.options[q.correctIndex]}</strong>
+                          Correct Answer: <strong>{q.options[key.correctIndex]}</strong>
                         </div>
                       )}
-                      <p style={{ fontSize: '0.78rem', color: '#64748B', marginTop: 6, fontStyle: 'italic' }}>
-                        Explanation: {q.explanation}
-                      </p>
+                      {key.explanation && (
+                        <p style={{ fontSize: '0.78rem', color: '#64748B', marginTop: 6, fontStyle: 'italic' }}>
+                          Explanation: {key.explanation}
+                        </p>
+                      )}
                     </div>
                   );
                 })}
@@ -1143,11 +1267,11 @@ const StudentPortal = () => {
           ) : (
             <div>
               <div style={{ display: 'flex', flexDirection: 'column', gap: 20, marginBottom: 24 }}>
-                {QUIZ_QUESTIONS.map((q, qIdx) => (
+                {quizQuestions.map((q, qIdx) => (
                   <div key={q.id} style={{ padding: 20, backgroundColor: '#F8FAFC', borderRadius: 10, border: '1px solid #E2E8F0' }}>
-                    <p style={{ fontWeight: 700, fontSize: '0.95rem', marginBottom: 12, color: '#0F172A' }}>Q{qIdx + 1}. {q.question}</p>
+                    <p style={{ fontWeight: 700, fontSize: '0.95rem', marginBottom: 12, color: '#0F172A' }}>Q{qIdx + 1}. {q.question || q.q}</p>
                     {q.options.map((opt, idx) => (
-                      <label key={opt} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '10px 14px', borderRadius: 6, border: '1px solid #E2E8F0', backgroundColor: '#FFFFFF', marginBottom: 8, cursor: 'pointer' }}>
+                      <label key={`${q.id}_${idx}`} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '10px 14px', borderRadius: 6, border: '1px solid #E2E8F0', backgroundColor: '#FFFFFF', marginBottom: 8, cursor: 'pointer' }}>
                         <input
                           type="radio"
                           name={`quiz_q_${q.id}`}
@@ -1228,7 +1352,9 @@ const StudentPortal = () => {
               <button className="btn btn-secondary btn-sm" onClick={() => setShowLeaveModal(true)}>
                 Apply for Leave
               </button>
-              <span className="badge badge-success" style={{ fontSize: '0.85rem' }}>{monthlyAttendancePct} Overall Attendance</span>
+              <span className={`badge ${attendanceMetrics.attendancePct !== null ? 'badge-success' : 'badge-warning'}`} style={{ fontSize: '0.85rem' }}>
+                {attendanceMetrics.attendancePct !== null ? `${attendanceMetrics.attendancePct}%` : '—'} Overall Attendance
+              </span>
             </div>
           </div>
 
@@ -1236,15 +1362,21 @@ const StudentPortal = () => {
             <div className="grid-3" style={{ gap: 16, marginBottom: 20 }}>
               <div style={{ padding: 16, backgroundColor: '#F8FAFC', borderRadius: 8, border: '1px solid #E2E8F0' }}>
                 <div style={{ fontSize: '0.75rem', color: '#64748B', fontWeight: 600 }}>TOTAL WORKING DAYS</div>
-                <div style={{ fontSize: '1.4rem', fontWeight: 800, color: 'var(--color-primary, #2563EB)' }}>120 Days</div>
+                <div style={{ fontSize: '1.4rem', fontWeight: 800, color: 'var(--color-primary, #2563EB)' }}>
+                  {attendanceLogs.length === 0 ? '—' : `${attendanceMetrics.workingDays} Days`}
+                </div>
               </div>
               <div style={{ padding: 16, backgroundColor: '#F8FAFC', borderRadius: 8, border: '1px solid #E2E8F0' }}>
-                <div style={{ fontSize: '0.75rem', color: '#64748B', fontWeight: 600 }}>PRESENT DAYS</div>
-                <div style={{ fontSize: '1.4rem', fontWeight: 800, color: '#16A34A' }}>115 Days</div>
+                <div style={{ fontSize: '0.75rem', color: '#64748B', fontWeight: 600 }}>ATTENDED DAYS (PRESENT + LATE)</div>
+                <div style={{ fontSize: '1.4rem', fontWeight: 800, color: '#16A34A' }}>
+                  {attendanceLogs.length === 0 ? '—' : `${attendanceMetrics.attendedDays} Days`}
+                </div>
               </div>
               <div style={{ padding: 16, backgroundColor: '#F8FAFC', borderRadius: 8, border: '1px solid #E2E8F0' }}>
                 <div style={{ fontSize: '0.75rem', color: '#64748B', fontWeight: 600 }}>ABSENT DAYS</div>
-                <div style={{ fontSize: '1.4rem', fontWeight: 800, color: '#DC2626' }}>5 Days</div>
+                <div style={{ fontSize: '1.4rem', fontWeight: 800, color: '#DC2626' }}>
+                  {attendanceLogs.length === 0 ? '—' : `${attendanceMetrics.absentDays} Days`}
+                </div>
               </div>
             </div>
 
@@ -1268,7 +1400,9 @@ const StudentPortal = () => {
                     <tr key={log.id} style={{ borderBottom: '1px solid #F1F5F9' }}>
                       <td style={{ padding: '10px 14px' }}><strong>{log.date}</strong></td>
                       <td style={{ padding: '10px 14px' }}>
-                        <span className={`badge ${log.status === 'Present' ? 'badge-success' : 'badge-danger'}`}>{log.status}</span>
+                        <span className={`badge ${log.pendingLeave ? 'badge-warning' : log.status === 'Present' ? 'badge-success' : log.status === 'Late' ? 'badge-warning' : 'badge-danger'}`}>
+                          {log.pendingLeave ? 'Leave Requested' : log.status}
+                        </span>
                       </td>
                       <td style={{ padding: '10px 14px' }}>{log.checkIn}</td>
                       <td style={{ padding: '10px 14px', fontSize: '0.82rem', color: '#64748B' }}>{log.remarks}</td>
@@ -1364,7 +1498,16 @@ const StudentPortal = () => {
       {activeTab === 'profile' && (
         <div className="card" style={{ padding: 24 }}>
           <div className="flex justify-between items-center" style={{ marginBottom: 20 }}>
-            <h4 style={{ margin: 0, fontSize: '1.05rem', fontWeight: 800, color: '#0F172A' }}>👤 Student Profile Details</h4>
+            <div className="flex items-center gap-3">
+              {profile.avatar ? (
+                <img src={profile.avatar} alt="" className="avatar avatar-lg" />
+              ) : (
+                <div className="avatar avatar-lg" style={{ backgroundColor: '#EFF6FF', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--color-primary, #2563EB)', fontWeight: 800 }}>
+                  {(displayValue(profile.name).match(/\b\w/g) || ['S']).slice(0, 2).join('')}
+                </div>
+              )}
+              <h4 style={{ margin: 0, fontSize: '1.05rem', fontWeight: 800, color: '#0F172A' }}>👤 Student Profile Details</h4>
+            </div>
             <button className="btn btn-primary btn-sm" onClick={() => { setEditProfile({ ...profile }); setShowProfileModal(true); }}>
               <Edit3 size={14} /> Edit Profile Info
             </button>
@@ -1373,39 +1516,43 @@ const StudentPortal = () => {
           <div className="grid-2" style={{ gap: 20 }}>
             <div>
               <div style={{ fontSize: '0.75rem', color: '#64748B', fontWeight: 600 }}>FULL NAME</div>
-              <div style={{ fontWeight: 700, fontSize: '1.1rem', color: '#0F172A' }}>{profile.name}</div>
+              <div style={{ fontWeight: 700, fontSize: '1.1rem', color: '#0F172A' }}>{displayValue(profile.name)}</div>
             </div>
             <div>
               <div style={{ fontSize: '0.75rem', color: '#64748B', fontWeight: 600 }}>ROLL NUMBER</div>
-              <div style={{ fontWeight: 700, fontSize: '1.1rem', color: 'var(--color-primary, #2563EB)' }}>{profile.rollNo}</div>
+              <div style={{ fontWeight: 700, fontSize: '1.1rem', color: 'var(--color-primary, #2563EB)' }}>{displayValue(profile.rollNo)}</div>
             </div>
             <div>
               <div style={{ fontSize: '0.75rem', color: '#64748B', fontWeight: 600 }}>CLASS & SECTION</div>
-              <div style={{ fontWeight: 600, color: '#0F172A' }}>{profile.class}</div>
+              <div style={{ fontWeight: 600, color: '#0F172A' }}>{displayValue(profile.class)}</div>
             </div>
             <div>
               <div style={{ fontSize: '0.75rem', color: '#64748B', fontWeight: 600 }}>INSTITUTION NAME</div>
-              <div style={{ fontWeight: 600, color: '#0F172A' }}>{profile.school}</div>
+              <div style={{ fontWeight: 600, color: '#0F172A' }}>{displayValue(profile.school)}</div>
+            </div>
+            <div>
+              <div style={{ fontSize: '0.75rem', color: '#64748B', fontWeight: 600 }}>EMAIL ADDRESS</div>
+              <div style={{ fontWeight: 600, color: '#0F172A' }}>{displayValue(profile.email)}</div>
             </div>
             <div>
               <div style={{ fontSize: '0.75rem', color: '#64748B', fontWeight: 600 }}>PARENT NAME</div>
-              <div style={{ fontWeight: 600, color: '#0F172A' }}>{profile.parentName}</div>
+              <div style={{ fontWeight: 600, color: '#0F172A' }}>{displayValue(profile.parentName)}</div>
             </div>
             <div>
               <div style={{ fontSize: '0.75rem', color: '#64748B', fontWeight: 600 }}>PARENT PHONE</div>
-              <div style={{ fontWeight: 600, color: '#0F172A' }}>{profile.parentPhone}</div>
+              <div style={{ fontWeight: 600, color: '#0F172A' }}>{displayValue(profile.parentPhone)}</div>
             </div>
             <div>
               <div style={{ fontSize: '0.75rem', color: '#64748B', fontWeight: 600 }}>BLOOD GROUP</div>
-              <div style={{ fontWeight: 600, color: '#0F172A' }}>{profile.bloodGroup}</div>
+              <div style={{ fontWeight: 600, color: '#0F172A' }}>{displayValue(profile.bloodGroup)}</div>
             </div>
             <div>
               <div style={{ fontSize: '0.75rem', color: '#64748B', fontWeight: 600 }}>DATE OF BIRTH</div>
-              <div style={{ fontWeight: 600, color: '#0F172A' }}>{profile.dob}</div>
+              <div style={{ fontWeight: 600, color: '#0F172A' }}>{displayValue(profile.dob)}</div>
             </div>
             <div style={{ gridColumn: 'span 2' }}>
               <div style={{ fontSize: '0.75rem', color: '#64748B', fontWeight: 600 }}>RESIDENTIAL ADDRESS</div>
-              <div style={{ fontWeight: 600, color: '#0F172A' }}>{profile.address}</div>
+              <div style={{ fontWeight: 600, color: '#0F172A' }}>{displayValue(profile.address)}</div>
             </div>
           </div>
         </div>
@@ -1531,25 +1678,25 @@ const StudentPortal = () => {
           <div className="grid-2" style={{ gap: 16 }}>
             <div className="form-group">
               <label className="form-label">Full Name</label>
-              <input className="form-input" value={editProfile.name} onChange={e => setEditProfile({ ...editProfile, name: e.target.value })} required />
+              <input className="form-input" value={editProfile.name || ''} onChange={e => setEditProfile({ ...editProfile, name: e.target.value })} required />
             </div>
             <div className="form-group">
               <label className="form-label">Parent Name</label>
-              <input className="form-input" value={editProfile.parentName} onChange={e => setEditProfile({ ...editProfile, parentName: e.target.value })} required />
+              <input className="form-input" value={editProfile.parentName || ''} onChange={e => setEditProfile({ ...editProfile, parentName: e.target.value })} required />
             </div>
             <div className="form-group">
               <label className="form-label">Parent Phone</label>
-              <input className="form-input" value={editProfile.parentPhone} onChange={e => setEditProfile({ ...editProfile, parentPhone: e.target.value })} required />
+              <input className="form-input" value={editProfile.parentPhone || ''} onChange={e => setEditProfile({ ...editProfile, parentPhone: e.target.value })} required />
             </div>
             <div className="form-group">
               <label className="form-label">Blood Group</label>
-              <input className="form-input" value={editProfile.bloodGroup} onChange={e => setEditProfile({ ...editProfile, bloodGroup: e.target.value })} required />
+              <input className="form-input" value={editProfile.bloodGroup || ''} onChange={e => setEditProfile({ ...editProfile, bloodGroup: e.target.value })} required />
             </div>
           </div>
 
           <div className="form-group">
             <label className="form-label">Address</label>
-            <input className="form-input" value={editProfile.address} onChange={e => setEditProfile({ ...editProfile, address: e.target.value })} required />
+            <input className="form-input" value={editProfile.address || ''} onChange={e => setEditProfile({ ...editProfile, address: e.target.value })} required />
           </div>
 
           <div className="flex justify-end gap-2" style={{ marginTop: 20 }}>

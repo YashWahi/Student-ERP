@@ -12,8 +12,38 @@ import {
 import { doc, getDoc, setDoc, collection, query, where, getDocs, serverTimestamp } from 'firebase/firestore';
 import { auth, db } from '../config/firebase.js';
 
+// Establish the real Firebase Auth identity needed by callable Cloud Functions.
+// loginUser() may resolve an application profile from LocalStorage or Firestore,
+// but that application object is not Firebase Authentication and cannot supply
+// request.auth. This helper is a side effect only: it signs the existing Auth
+// account in when possible and returns control to the unchanged profile logic.
+// A failure preserves the existing login behavior; Cloud Functions must still
+// reject payment calls because request.auth remains mandatory server-side.
+const ensureFirebaseCallableIdentity = async (cleanEmail, password) => {
+  if (auth.currentUser) {
+    return auth.currentUser;
+  }
+
+  try {
+    const credential = await signInWithEmailAndPassword(
+      auth,
+      cleanEmail,
+      password
+    );
+    return credential.user;
+  } catch (error) {
+    console.warn(
+      'Firebase callable identity unavailable:',
+      error?.code || error?.message
+    );
+    return null;
+  }
+};
+
 export const loginUser = async (email, password) => {
   const cleanEmail = (email || '').toLowerCase().trim();
+
+  await ensureFirebaseCallableIdentity(cleanEmail, password);
 
   // 0. FIRST check custom_users in LocalStorage (Instantly matches newly created Admin/Teacher/Student/Staff!)
   try {

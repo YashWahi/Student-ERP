@@ -1,7 +1,8 @@
 // src/config/firebase.js
 import { initializeApp, getApps, getApp } from 'firebase/app';
-import { getAuth } from 'firebase/auth';
-import { getFirestore } from 'firebase/firestore';
+import { getAuth, connectAuthEmulator } from 'firebase/auth';
+import { getFirestore, connectFirestoreEmulator } from 'firebase/firestore';
+import { getFunctions, connectFunctionsEmulator } from 'firebase/functions';
 import { getStorage } from 'firebase/storage';
 
 const env = (typeof import.meta !== 'undefined' && import.meta.env) ? import.meta.env : (typeof process !== 'undefined' && process.env) ? process.env : {};
@@ -23,5 +24,16 @@ const app = getApps().length === 0 ? initializeApp(firebaseConfig) : getApp();
 export const auth = getAuth(app);
 export const db = getFirestore(app);
 export const storage = getStorage(app);
+// Callable Cloud Functions region must match FUNCTIONS_REGION in functions/index.js.
+export const functions = getFunctions(app, 'asia-south1');
+
+// Set VITE_USE_FIREBASE_EMULATORS=true only for the local Firebase Emulator Suite.
+// This is opt-in so the normal application always targets its configured Firebase project.
+const useEmulators = env.VITE_USE_FIREBASE_EMULATORS === 'true';
+if (useEmulators && typeof window !== 'undefined') {
+  connectAuthEmulator(auth, 'http://127.0.0.1:9099', { disableWarnings: true });
+  connectFirestoreEmulator(db, '127.0.0.1', 8080);
+  connectFunctionsEmulator(functions, '127.0.0.1', 5001);
+}
 
 export default app;

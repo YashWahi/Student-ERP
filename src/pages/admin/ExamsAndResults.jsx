@@ -28,11 +28,6 @@ const MOCK_MARKS_ROSTER = [
   { id: 'm3', rollNo: 'GV-2026-003', studentName: 'Ananya Gupta', class: 'Class 10-A', math: 78, physics: 75, english: 80, cs: 82, total: 315, max: 400, pct: 78.75, gpa: 7.8, rank: 3 },
 ];
 
-const MOCK_QUESTIONS = [
-  { q: 'Derive quadratic formula ax² + bx + c = 0', sub: 'Mathematics', diff: 'Medium', marks: 5 },
-  { q: 'State Newton’s Second Law of Motion with SI units', sub: 'Physics', diff: 'Easy', marks: 3 },
-];
-
 const ExamsAndResults = () => {
   const { userProfile, tenantId: activeTenantId } = useAuthStore();
   const currentTenant = userProfile?.tenantId || activeTenantId || 'tenant_gvis';
@@ -56,7 +51,7 @@ const ExamsAndResults = () => {
     return isCustomCollege ? [] : MOCK_MARKS_ROSTER;
   });
 
-  const [questionBank, setQuestionBank] = useState(MOCK_QUESTIONS);
+  const [questionBank, setQuestionBank] = useState([]);
 
   // Modals
   const [showCreateExamModal, setShowCreateExamModal] = useState(false);
@@ -81,6 +76,8 @@ const ExamsAndResults = () => {
   const [qSub, setQSub] = useState('Mathematics');
   const [qDiff, setQDiff] = useState('Medium');
   const [qMarks, setQMarks] = useState(5);
+  const [qOptions, setQOptions] = useState(['', '', '', '']);
+  const [qCorrectIdx, setQCorrectIdx] = useState(0);
 
   useEffect(() => {
     const loadAcademicData = async () => {
@@ -163,17 +160,31 @@ const ExamsAndResults = () => {
   const handleAddQuestion = async (e) => {
     e.preventDefault();
     if (!qSnippet) return;
+
+    const options = qOptions.map(o => o.trim());
+    const filledCount = options.filter(Boolean).length;
+    if (filledCount > 0 && filledCount < options.length) {
+      toast.error('Provide all 4 answer options for an MCQ, or leave all blank for a theory question.');
+      return;
+    }
+    const isMcq = filledCount === options.length;
+
     const newQ = await addQuestionToBank({
       tenantId: currentTenant,
       q: qSnippet,
       sub: qSub,
       diff: qDiff,
-      marks: Number(qMarks)
+      marks: Number(qMarks),
+      // MCQ fields complete the partial questionBank schema so the Student
+      // Portal online quiz can render and auto-grade these questions.
+      ...(isMcq ? { type: 'mcq', options, correctIndex: Number(qCorrectIdx) } : {}),
     });
     setQuestionBank([newQ, ...questionBank]);
-    toast.success(`📖 Question added to bank!`);
+    toast.success(isMcq ? '📖 MCQ added to bank!' : '📖 Question added to bank!');
     setShowQuestionModal(false);
     setQSnippet('');
+    setQOptions(['', '', '', '']);
+    setQCorrectIdx(0);
   };
 
   // Download PDF Admit Cards
@@ -360,7 +371,12 @@ const ExamsAndResults = () => {
                 <tbody>
                   {questionBank.map((q, idx) => (
                     <tr key={idx}>
-                      <td><strong>{q.q}</strong></td>
+                      <td>
+                        <strong>{q.q}</strong>
+                        {Array.isArray(q.options) && q.options.length > 0 && (
+                          <span className="badge badge-success" style={{ marginLeft: 8 }}>MCQ</span>
+                        )}
+                      </td>
                       <td><span className="badge badge-primary">{q.sub}</span></td>
                       <td><span className="badge badge-warning">{q.diff}</span></td>
                       <td>{q.marks} Marks</td>
@@ -458,6 +474,31 @@ const ExamsAndResults = () => {
           <div className="form-group">
             <label className="form-label">Marks Weightage</label>
             <input type="number" className="form-input" value={qMarks} onChange={e => setQMarks(e.target.value)} min="1" max="20" required />
+          </div>
+          <div className="form-group">
+            <label className="form-label">Answer Options (for online quiz MCQ — optional)</label>
+            {qOptions.map((opt, idx) => (
+              <input
+                key={idx}
+                className="form-input"
+                style={{ marginBottom: 8 }}
+                placeholder={`Option ${String.fromCharCode(65 + idx)}`}
+                value={opt}
+                onChange={(e) => setQOptions(prev => prev.map((o, i) => (i === idx ? e.target.value : o)))}
+              />
+            ))}
+            <span style={{ fontSize: '0.72rem', color: 'var(--color-text-muted, #64748B)' }}>
+              Leave all four blank for a theory question. Fill all four to make it attemptable in the Student Portal Online Quiz tab.
+            </span>
+          </div>
+          <div className="form-group">
+            <label className="form-label">Correct Option (MCQ only)</label>
+            <select className="form-select" value={qCorrectIdx} onChange={(e) => setQCorrectIdx(Number(e.target.value))}>
+              <option value={0}>Option A</option>
+              <option value={1}>Option B</option>
+              <option value={2}>Option C</option>
+              <option value={3}>Option D</option>
+            </select>
           </div>
           <div className="flex justify-end gap-2" style={{ marginTop: 20 }}>
             <button type="button" className="btn btn-ghost" onClick={() => setShowQuestionModal(false)}>Cancel</button>

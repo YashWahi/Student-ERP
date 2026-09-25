@@ -11,15 +11,23 @@ const safeQuery = async (promise, timeoutMs = 800) => {
   ]).catch(() => null);
 };
 
+// Normalizes class identifiers so "Class 10-A" and "10-A" map to the same document.
+export const normalizeClassKey = (value) =>
+  String(value || '').replace(/^class\s+/i, '').trim().replace(/\s+/g, '-').toLowerCase();
+
 // 1. Attendance Logger & Fetcher
 export const markClassAttendance = async (attendanceData) => {
   const { tenantId = 'tenant_gvis', branchId = 'branch_main', classId, date, teacherId, records } = attendanceData;
-  const docId = `att_${tenantId}_${classId}_${date}`;
+  const classKey = normalizeClassKey(classId);
+  // Deterministic doc id guarantees a single document per tenant + class + date,
+  // regardless of whether the teacher UI passed "Class 10-A" or "10-A".
+  const docId = `att_${tenantId}_${classKey}_${date}`;
 
   const payload = {
     tenantId,
     branchId,
     classId,
+    classKey,
     date,
     teacherId,
     records,
@@ -52,29 +60,52 @@ export const markClassAttendance = async (attendanceData) => {
   await logAuditEvent({
     action: 'MARK_ATTENDANCE',
     actor: 'Teacher',
-    target: `Class ${classId}`,
+    target: `${classId}`,
     details: `Marked attendance for ${records.length} students on ${date}`,
     tenantId,
   });
 };
 
 export const fetchClassAttendance = async ({ tenantId = 'tenant_gvis', classId, date }) => {
-  try {
-    const docId = `att_${tenantId}_${classId}_${date}`;
-    const attRef = doc(db, 'attendance', docId);
-    const snap = await getDoc(attRef);
-    if (snap.exists()) {
-      return snap.data();
+  const classKey = normalizeClassKey(classId);
+  const candidateIds = [
+    `att_${tenantId}_${classKey}_${date}`,
+    `att_${tenantId}_${classId}_${date}`, // legacy documents written before class normalization
+  ];
+
+  for (const docId of candidateIds) {
+    try {
+      const attRef = doc(db, 'attendance', docId);
+      const snap = await getDoc(attRef);
+      if (snap.exists()) {
+        return snap.data();
+      }
+    } catch (err) {
+      console.warn('Firestore fetchClassAttendance fallback:', err.message);
     }
-  } catch (err) {
-    console.warn('Firestore fetchClassAttendance fallback:', err.message);
   }
 
+  // Query fallback for documents persisted under a different class spelling.
   try {
-    const local = JSON.parse(localStorage.getItem(`attendance_${tenantId}_${classId}`) || '[]');
-    const matched = local.find(a => a.date === date);
+    const qAtt = query(collection(db, 'attendance'), where('tenantId', '==', tenantId));
+    const snap = await getDocs(qAtt);
+    const matched = snap.docs
+      .map(d => ({ id: d.id, ...d.data() }))
+      .find(d => d.date === date && normalizeClassKey(d.classId || d.classKey) === classKey);
     if (matched) return matched;
   } catch {}
+
+  const localKeys = [...new Set([
+    classId,
+    String(classId || '').replace(/^class\s+/i, '').trim(),
+  ].filter(Boolean))];
+  for (const key of localKeys) {
+    try {
+      const local = JSON.parse(localStorage.getItem(`attendance_${tenantId}_${key}`) || '[]');
+      const found = local.find(a => a.date === date);
+      if (found) return found;
+    } catch {}
+  }
 
   return null;
 };

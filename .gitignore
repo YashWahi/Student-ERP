@@ -35,3 +35,16 @@ Thumbs.db
 # Firebase
 .firebase/
 firebase-debug.log
+firebase-debug.*.log
+firestore-debug.log
+ui-debug.log
+*.log
+# Local emulator data and local-only secret files. Never commit these.
+.firebaserc.local
+functions/.secret.local
+functions/*.secret.local*
+functions/.env.demo-test.local
+emulator-data/
+*.env.local
+.env.local
+
