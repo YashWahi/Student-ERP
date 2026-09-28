@@ -7,7 +7,7 @@ import Modal from '../../components/common/Modal';
 import { initiatePlatformSubscriptionCheckout } from '../../services/razorpayService';
 import { exportToCSV } from '../../services/exportService';
 import { logAuditEvent } from '../../services/auditService';
-import { getSubscriptions, createSubscriptionRecord, renewSubscriptionRecord } from '../../services/tenantService';
+import { getSubscriptions, createSubscriptionRecord } from '../../services/tenantService';
 import toast from 'react-hot-toast';
 
 const Subscriptions = () => {
@@ -44,13 +44,18 @@ const Subscriptions = () => {
 
   const handleRenewSubscription = async (sub) => {
     await initiatePlatformSubscriptionCheckout({
+      // Stable authoritative identifier: the backend loads subscriptions/{subId},
+      // derives the plan amount server-side, verifies, and renews server-side.
+      // Display args below are UI text only — never trusted for amounts/identity.
+      subId: sub.id || sub.subId,
       tenantId: sub.college.toLowerCase().replace(/\s+/g, '_'),
       collegeName: sub.college,
       planTier: sub.plan,
       amount: sub.amount,
       adminEmail: 'admin@college.edu',
       onSuccess: async (res) => {
-        await renewSubscriptionRecord(sub.id || sub.subId, { status: 'Active', expiryDate: '2027-08-13' });
+        // Renewal was already performed + verified server-side. The client only
+        // refreshes its view — it never writes the renewal itself.
         toast.success(`🎉 Subscription Renewed for ${sub.college}! Txn: ${res.paymentId}`);
         loadSubscriptionsData();
       },
