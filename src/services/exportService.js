@@ -1,11 +1,13 @@
 // src/services/exportService.js
 
+import toast from 'react-hot-toast';
+
 /**
  * Export data array to CSV file download
  */
 export const exportToCSV = (filename, rows, columns) => {
   if (!rows || !rows.length) {
-    alert('No data available to export');
+    toast.error('No data available to export');
     return;
   }
 

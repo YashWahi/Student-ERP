@@ -12,7 +12,7 @@
 // - No client-side "verified: true" — only the backend verdict marks Paid.
 // - Firestore writes happen server-side in verifyRazorpayPayment; the frontend
 //   only generates the PDF receipt + UI updates after backend confirmation.
-
+import toast from 'react-hot-toast';
 import { httpsCallable } from 'firebase/functions';
 import { functions } from '../config/firebase';
 import { FALLBACK_RAZORPAY_KEY_ID, RAZORPAY_FUNCTIONS } from '../config/payments';
@@ -262,7 +262,7 @@ export const initiateFeePayout = async ({
 }) => {
   const loaded = await loadRazorpayScript();
   if (!loaded) {
-    alert('Razorpay SDK failed to load. Please check your internet connection.');
+    toast.error('Razorpay SDK failed to load. Please check your internet connection.');
     onFailure && onFailure(new Error('SDK load failed'));
     return;
   }
@@ -329,7 +329,7 @@ export const initiatePlatformSubscriptionCheckout = async ({
 }) => {
   const loaded = await loadRazorpayScript();
   if (!loaded) {
-    alert('Razorpay SDK failed to load.');
+    toast.error('Razorpay SDK failed to load.');
     onFailure && onFailure(new Error('SDK load failed'));
     return;
   }
