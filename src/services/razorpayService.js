@@ -192,8 +192,11 @@ const openVerifiedCheckout = async ({
         });
 
         // Firestore is already updated server-side; generate the PDF receipt.
+        // IMPORTANT: generateFeeReceiptPDF is async (awaits QR code rendering).
+        // It MUST be awaited so that failures are caught and the receipt is not
+        // silently lost. onSuccess is only called after the PDF attempt settles.
         try {
-          generateFeeReceiptPDF({
+          await generateFeeReceiptPDF({
             receiptNo: verified.txnId,
             studentName: receiptMeta.studentName,
             rollNo: receiptMeta.rollNo,
@@ -203,7 +206,11 @@ const openVerifiedCheckout = async ({
             paymentMethod: 'Online (Razorpay)',
           });
         } catch (pdfErr) {
+          // Receipt generation failure must NOT prevent the success callback —
+          // payment is already verified server-side — but it must be surfaced so
+          // the user is not left without a receipt without any indication.
           console.warn('Receipt PDF generation failed:', pdfErr?.message || pdfErr);
+          toast.error('Payment recorded, but the receipt PDF could not be generated. Please contact support.');
         }
 
         onSuccess && onSuccess({

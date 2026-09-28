@@ -197,7 +197,7 @@ const ParentPortal = () => {
       feeType: 'Quarterly School Fee',
       parentEmail: user?.email || 'parent@school.edu',
       parentPhone: userProfile?.phone || '+91 98765 43212',
-      onSuccess: (res) => {
+      onSuccess: async (res) => {
         setPaidStatusMap(prev => ({ ...prev, [activeChild.id]: true }));
         const newTxn = {
           id: res.paymentId || `REC-${Date.now()}`,
@@ -210,14 +210,21 @@ const ParentPortal = () => {
         };
         setFeeTransactions(prev => [newTxn, ...prev]);
         toast.success(`🎉 Fee Paid for ${activeChild.name}! Txn: ${res.paymentId}`);
-        generateFeeReceiptPDF({
-          receiptNo: res.paymentId,
-          studentName: activeChild.name,
-          rollNo: activeChild.rollNo,
-          className: activeChild.class,
-          feeType: 'Quarterly School Fee (Q2)',
-          amount: activeChild.feeDue,
-        });
+        // generateFeeReceiptPDF is async; await it so failures are caught and
+        // the user is not left without a receipt silently.
+        try {
+          await generateFeeReceiptPDF({
+            receiptNo: res.paymentId,
+            studentName: activeChild.name,
+            rollNo: activeChild.rollNo,
+            className: activeChild.class,
+            feeType: 'Quarterly School Fee (Q2)',
+            amount: activeChild.feeDue,
+          });
+        } catch (pdfErr) {
+          console.warn('Receipt PDF generation failed:', pdfErr?.message || pdfErr);
+          toast.error('Payment recorded, but the receipt PDF could not be generated.');
+        }
       },
       onFailure: () => toast.error('Payment cancelled'),
     });

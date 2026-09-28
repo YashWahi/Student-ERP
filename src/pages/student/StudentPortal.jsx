@@ -975,8 +975,9 @@ const StudentPortal = () => {
               <p style={{ fontSize: '0.8rem', color: '#64748B', margin: '2px 0 0' }}>Overall GPA: {latestGPA} | Active Academic Session</p>
             </div>
             {resultsList.length > 0 && (
-              <button className="btn btn-primary btn-sm" onClick={() => {
-                import('jspdf').then(({ default: jsPDF }) => {
+              <button className="btn btn-primary btn-sm" onClick={async () => {
+                try {
+                  const { default: jsPDF } = await import('jspdf');
                   const doc = new jsPDF();
                   doc.setFontSize(18); doc.text(profile.school, 20, 20);
                   doc.setFontSize(14); doc.text('Official Term Report Card (2026-2027)', 20, 30);
@@ -1009,8 +1010,12 @@ const StudentPortal = () => {
                   doc.text(`Grade Standing: ${latestGPA}`, 20, y);
 
                   doc.save(`${profile.rollNo}_ReportCard.pdf`);
-                });
-                toast.success('📜 Official Report Card PDF downloaded!');
+                  // Toast fires only AFTER the PDF is successfully generated and saved.
+                  toast.success('📜 Official Report Card PDF downloaded!');
+                } catch (pdfErr) {
+                  console.warn('Report card PDF generation failed:', pdfErr?.message || pdfErr);
+                  toast.error('Report Card PDF could not be generated. Please try again.');
+                }
               }}>
                 <Download size={14} /> Download Report Card PDF
               </button>

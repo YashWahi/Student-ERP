@@ -7,7 +7,7 @@
     "dev": "vite",
     "build": "vite build",
     "lint": "oxlint",
-    "test": "node src/tests/tenantThemeWebsite.test.js && node src/tests/parentPortalWorkflows.test.js && node src/tests/teacherWorkspaceWorkflows.test.js && node src/tests/studentPortalWorkflows.test.js && node src/tests/branchAdminWorkflows.test.js && node src/tests/kpiCalculator.test.js && node src/tests/razorpayVerification.test.js && node src/tests/razorpayPolicy.test.js && node src/tests/verifySecurityPass.js && node src/tests/dashboardWorkflows.test.js",
+    "test": "node src/tests/tenantThemeWebsite.test.js && node src/tests/parentPortalWorkflows.test.js && node src/tests/teacherWorkspaceWorkflows.test.js && node src/tests/studentPortalWorkflows.test.js && node src/tests/branchAdminWorkflows.test.js && node src/tests/kpiCalculator.test.js && node src/tests/razorpayVerification.test.js && node src/tests/razorpayPolicy.test.js && node src/tests/verifySecurityPass.js && node src/tests/dashboardWorkflows.test.js && node src/tests/feeReceiptPDFAsync.test.js && node src/tests/aiServiceSecurity.test.js",
     "preview": "vite preview"
   },
   "dependencies": {

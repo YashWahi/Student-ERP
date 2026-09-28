@@ -398,9 +398,12 @@ export const recordFeePayment = async (tenantId, paymentData) => {
     throw new Error(err.message || 'Failed to record payment securely.');
   }
 
-  // Auto Generate PDF Receipt
+  // Auto Generate PDF Receipt.
+  // generateFeeReceiptPDF is async (awaits QR code rendering); it MUST be
+  // awaited so that a failure is caught here and not silently discarded as
+  // an unhandled promise rejection that the caller never sees.
   try {
-    generateFeeReceiptPDF({
+    await generateFeeReceiptPDF({
       receiptNo: txnId,
       studentName,
       rollNo,
@@ -412,6 +415,9 @@ export const recordFeePayment = async (tenantId, paymentData) => {
     });
   } catch (pdfErr) {
     console.warn('Error generating PDF receipt automatically:', pdfErr);
+    // Receipt generation failure is non-fatal for the caller — Firestore is
+    // already updated. We log and do not re-throw so that the payment record
+    // is still returned. The caller is responsible for notifying the user.
   }
 
   return {
