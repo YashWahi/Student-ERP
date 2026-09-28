@@ -68,7 +68,7 @@ const StudentAdmission = () => {
   const [parentMatch, setParentMatch] = useState(null);
   const [isUniqueAdmNo, setIsUniqueAdmNo] = useState(true);
   const [submitting, setSubmitting] = useState(false);
-  const [createdReceipt, setCreatedReceipt] = useState(null);
+  const [createdReceipt, setCreatedReceipt] = useState(null); // Deprecated: Receipts should only be generated securely by the backend
 
   // Initialize auto admission number
   const defaultAdmNo = `ADM-2026-${Math.floor(100 + Math.random() * 900)}`;
@@ -171,9 +171,7 @@ const StudentAdmission = () => {
   const handleFinalSubmit = async (data) => {
     setSubmitting(true);
     try {
-      const receiptNo = `REC-2026-${Math.floor(1000 + Math.random() * 9000)}`;
-
-      // Save Student to store
+      // Save Student to store. Payment must be verified securely via the backend/Razorpay gateway.
       const newStudent = addStudent({
         tenantId: activeTenantId,
         name: data.studentName,
@@ -190,13 +188,13 @@ const StudentAdmission = () => {
         bloodGroup: data.bloodGroup,
         dob: data.dob,
         address: data.address,
-        feeStatus: 'Paid',
+        feeStatus: 'Pending', // Security Fix: Payment status cannot be blindly trusted from client
         status: 'Active',
-        feeReceipt: {
-          receiptNo,
-          totalPaid: netPayable,
-          paymentMode: data.paymentMode,
-          paymentRef: data.paymentRef,
+        // Security Fix: Do not generate authoritative receipt numbers in browser
+        initialFeeDetails: {
+          totalPayable: netPayable,
+          declaredPaymentMode: data.paymentMode,
+          declaredPaymentRef: data.paymentRef,
           date: new Date().toISOString().split('T')[0]
         }
       });
@@ -206,17 +204,7 @@ const StudentAdmission = () => {
         updateLeadStage(leadId, 'Admitted');
       }
 
-      setCreatedReceipt({
-        receiptNo,
-        studentName: data.studentName,
-        className: data.className,
-        admissionNo: data.admissionNo,
-        amount: netPayable,
-        paymentMode: data.paymentMode,
-        paymentRef: data.paymentRef,
-        parentName: data.parentName,
-        date: new Date().toISOString().split('T')[0]
-      });
+      setCreatedReceipt(null);
 
       toast.success(`🎉 Admission Completed! Student "${data.studentName}" admitted to ${data.className}!`);
       setTimeout(() => {
@@ -528,19 +516,12 @@ const StudentAdmission = () => {
                     </div>
                   </div>
 
-                  {createdReceipt && (
-                    <div style={{ padding: 16, backgroundColor: '#EFF6FF', border: '1px solid #BFDBFE', borderRadius: 8, marginBottom: 20 }}>
-                      <div className="flex justify-between items-center">
-                        <div>
-                          <strong style={{ color: '#1D4ED8' }}>Receipt Generated: #{createdReceipt.receiptNo}</strong>
-                          <div style={{ fontSize: '0.78rem', color: '#3B82F6' }}>Amount ₹{createdReceipt.amount} paid via {createdReceipt.paymentMode}</div>
-                        </div>
-                        <button type="button" className="btn btn-secondary btn-sm" onClick={() => window.print()}>
-                          <Printer size={14} /> Print Receipt
-                        </button>
-                      </div>
+                  {/* Security Fix: Removed fake receipt generation UI */}
+                  <div style={{ textAlign: 'center', marginTop: 12, marginBottom: 20 }}>
+                    <div style={{ fontSize: '0.85rem', color: '#64748B' }}>
+                      Admission recorded. Payment verification and official receipt generation must be completed securely via the Fee Management portal.
                     </div>
-                  )}
+                  </div>
                 </div>
               )}
             </motion.div>

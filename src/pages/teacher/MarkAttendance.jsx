@@ -52,15 +52,19 @@ const MarkAttendance = () => {
   };
 
   const handleSaveAttendance = async () => {
-    await markClassAttendance({
-      tenantId: currentTenant,
-      branchId: currentBranch,
-      classId: selectedClass,
-      date: new Date().toISOString().split('T')[0],
-      teacherId: currentTeacherId,
-      records: students,
-    });
-    toast.success(`✅ Attendance for ${selectedClass} saved & synced to Firebase!`);
+    try {
+      await markClassAttendance({
+        tenantId: currentTenant,
+        branchId: currentBranch,
+        classId: selectedClass,
+        date: new Date().toISOString().split('T')[0],
+        teacherId: currentTeacherId,
+        records: students,
+      });
+      toast.success(`✅ Attendance for ${selectedClass} saved & synced to Firebase!`);
+    } catch (err) {
+      toast.error(err.message || 'Failed to save attendance.');
+    }
   };
 
   return (
