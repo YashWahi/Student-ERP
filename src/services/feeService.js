@@ -316,7 +316,8 @@ export const recordFeePayment = async (tenantId, paymentData) => {
     rollNo,
     className,
     feeHead,
-    amountPaid,
+    amountCollected, // New: the delta for concurrency safety
+    amountPaid,      // Legacy: absolute value (used if amountCollected is omitted)
     totalDue,
     paymentMethod, // 'Cash Counter', 'Cheque Counter', 'UPI QR Code', 'POS Card Swipe', 'NEFT / Bank Transfer', 'Razorpay Online'
     txnId = `TXN_${Date.now().toString().slice(-6)}`,
@@ -325,46 +326,76 @@ export const recordFeePayment = async (tenantId, paymentData) => {
     collegeName = 'Green Valley International School',
   } = paymentData;
 
-  const numPaid = Number(amountPaid);
-  const numDue = Number(totalDue);
-  let updatedStatus = 'Paid';
-  if (numPaid < numDue) {
-    updatedStatus = 'Partial';
+  if (!paymentMethod || typeof paymentMethod !== 'string' || paymentMethod.trim() === '') {
+    throw new Error('A valid payment method is required to record a fee payment.');
   }
 
   const isOnline = paymentMethod.toLowerCase().includes('razorpay') || paymentMethod.toLowerCase().includes('online');
   const paymentType = isOnline ? 'Online' : 'Offline';
 
   const feeRef = doc(db, 'fees', feeId || `fee_${Date.now()}`);
-  const payload = {
-    tenantId: tenantId || 'tenant_gvis',
-    feeId,
-    studentName,
-    rollNo,
-    className,
-    feeHead,
-    amountPaid: numPaid,
-    totalDue: numDue,
-    status: updatedStatus,
-    method: paymentMethod,
-    paymentType,
-    txnId,
-    chequeNo,
-    bankName,
-    paidAt: new Date().toISOString(),
-  };
+  let finalPaid = 0;
+  let updatedStatus = 'Pending';
+  const numDue = Number(totalDue);
+  let finalTxnId = txnId;
 
   try {
-    await setDoc(feeRef, payload, { merge: true });
+    await runTransaction(db, async (transaction) => {
+      const feeDoc = await transaction.get(feeRef);
+      const currentData = feeDoc.exists() ? feeDoc.data() : {};
+      const currentPaid = Number(currentData.amountPaid) || 0;
+      
+      const delta = amountCollected !== undefined ? Number(amountCollected) : Math.max(0, Number(amountPaid) - currentPaid);
+      finalPaid = currentPaid + delta;
+
+      updatedStatus = 'Paid';
+      if (finalPaid < numDue) {
+        updatedStatus = 'Partial';
+      }
+
+      const existingHistory = currentData.paymentHistory || [];
+      const newTransaction = {
+        amount: delta,
+        method: paymentMethod,
+        paymentType,
+        txnId,
+        chequeNo,
+        bankName,
+        date: new Date().toISOString()
+      };
+
+      const payload = {
+        tenantId: tenantId || 'tenant_gvis',
+        feeId,
+        studentName,
+        rollNo,
+        className,
+        feeHead,
+        amountPaid: finalPaid,
+        totalDue: numDue,
+        status: updatedStatus,
+        method: paymentMethod,
+        paymentType,
+        txnId,
+        chequeNo,
+        bankName,
+        paidAt: new Date().toISOString(),
+        paymentHistory: [...existingHistory, newTransaction],
+      };
+
+      transaction.set(feeRef, payload, { merge: true });
+    });
+
     await logAuditEvent({
       action: 'FEE_PAYMENT_COLLECTED',
       actor: isOnline ? 'System / Razorpay Webhook' : 'Accountant Counter',
       target: studentName,
-      details: `Collected ₹${numPaid.toLocaleString('en-IN')} via ${paymentMethod} for ${feeHead} (Txn: ${txnId})`,
+      details: `Collected ₹${(amountCollected || amountPaid).toLocaleString('en-IN')} via ${paymentMethod} for ${feeHead} (Txn: ${txnId})`,
       tenantId: tenantId || 'tenant_gvis',
     });
   } catch (err) {
-    console.warn('Firestore recordFeePayment fallback:', err.message);
+    console.error('Firestore recordFeePayment transaction failed:', err);
+    throw new Error(err.message || 'Failed to record payment securely.');
   }
 
   // Auto Generate PDF Receipt
@@ -375,7 +406,7 @@ export const recordFeePayment = async (tenantId, paymentData) => {
       rollNo,
       className,
       feeType: feeHead,
-      amount: numPaid,
+      amount: finalPaid,
       paymentMethod,
       collegeName,
     });
@@ -386,8 +417,8 @@ export const recordFeePayment = async (tenantId, paymentData) => {
   return {
     feeId,
     status: updatedStatus,
-    txnId,
-    amountPaid: numPaid,
+    txnId: finalTxnId,
+    amountPaid: finalPaid,
     paymentMethod,
     date: new Date().toISOString().split('T')[0],
   };
