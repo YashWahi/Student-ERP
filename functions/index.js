@@ -7,6 +7,7 @@ const { FieldValue } = require('firebase-admin/firestore');
 const crypto = require('crypto');
 const Razorpay = require('razorpay');
 const policy = require('./policy');
+const userProvisioningPolicy = require('./userProvisioningPolicy');
 
 admin.initializeApp();
 const db = admin.firestore();
@@ -34,7 +35,7 @@ function fail(result) {
 }
 async function profile(uid) {
   const snap = await db.collection('users').doc(uid).get();
-  return snap.exists ? { uid: snap.id, ...snap.data() } : null;
+  return snap.exists ? { ...snap.data(), uid: snap.id } : null;
 }
 async function fee(feeId) {
   let snap = await db.collection('fees').doc(feeId).get();
@@ -86,6 +87,110 @@ async function createOrder(kind, resourceId, context) {
 }
 
 exports.getRazorpayPublicKey = onCall({ region: REGION, secrets: [KEY_ID] }, async (request) => { auth(request); return { keyId: KEY_ID.value() }; });
+exports.createErpUser = onCall({ region: REGION }, async (request) => {
+  const caller = auth(request);
+  const data = request.data || {};
+  const callerProfile = await profile(caller.uid);
+  const role = String(data.role || '').trim().toLowerCase();
+  const tenantId = data.tenantId ? id(data.tenantId) : null;
+  const assignment = userProvisioningPolicy.authorizeUserRoleAssignment({
+    callerProfile,
+    role,
+    tenantId,
+  });
+  fail(assignment);
+
+  const email = String(data.email || '').trim().toLowerCase();
+  const name = String(data.name || '').trim();
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) || email.length > 254) {
+    throw new HttpsError('invalid-argument', 'A valid email address is required.');
+  }
+  if (!name || name.length > 120) {
+    throw new HttpsError('invalid-argument', 'A valid user name is required.');
+  }
+
+  const suppliedPassword = data.password == null || data.password === ''
+    ? null
+    : String(data.password);
+  if (suppliedPassword && (suppliedPassword.length < 8 || suppliedPassword.length > 128)) {
+    throw new HttpsError('invalid-argument', 'Password must be between 8 and 128 characters.');
+  }
+
+  const branchId = data.branchId ? id(data.branchId) : null;
+  if (tenantId) {
+    const tenantSnap = await db.collection('tenants').doc(tenantId).get();
+    if (!tenantSnap.exists) {
+      throw new HttpsError('not-found', 'The selected tenant does not exist.');
+    }
+  }
+  if (branchId) {
+    const branchSnap = await db.collection('branches').doc(branchId).get();
+    if (!branchSnap.exists || branchSnap.data().tenantId !== tenantId) {
+      throw new HttpsError('permission-denied', 'The selected branch does not belong to this tenant.');
+    }
+  }
+
+  let createdUser;
+  try {
+    createdUser = await admin.auth().createUser({
+      email,
+      password: suppliedPassword || crypto.randomBytes(32).toString('base64url'),
+      displayName: name,
+    });
+  } catch (error) {
+    if (error.code === 'auth/email-already-exists') {
+      throw new HttpsError('already-exists', 'An account with this email already exists.');
+    }
+    console.error('Firebase Auth user provisioning failed:', error);
+    throw new HttpsError('internal', 'Unable to create the Firebase account.');
+  }
+
+  const userProfile = {
+    uid: createdUser.uid,
+    email,
+    name,
+    role,
+    tenantId,
+    branchId,
+    phone: String(data.phone || ''),
+    avatar: String(data.avatar || ''),
+    isActive: true,
+    createdAt: FieldValue.serverTimestamp(),
+    updatedAt: FieldValue.serverTimestamp(),
+  };
+  if (role === 'teacher') {
+    userProfile.subject = String(data.subject || '');
+    userProfile.qualification = String(data.qualification || '');
+  }
+  if (role === 'admin' && Array.isArray(data.enabledModules)) {
+    userProfile.enabledModules = data.enabledModules.filter((module) => typeof module === 'string');
+  }
+  if (role === 'admin' && data.schoolName) {
+    userProfile.schoolName = String(data.schoolName);
+  }
+
+  try {
+    await db.collection('users').doc(createdUser.uid).create(userProfile);
+  } catch (error) {
+    try {
+      await admin.auth().deleteUser(createdUser.uid);
+    } catch (cleanupError) {
+      console.error('Failed to remove Firebase account after profile creation failed:', cleanupError);
+    }
+    console.error('Firestore ERP profile provisioning failed:', error);
+    throw new HttpsError('internal', 'Unable to save the ERP user profile.');
+  }
+
+  return {
+    user: { uid: createdUser.uid, email, displayName: name },
+    profile: {
+      id: createdUser.uid,
+      ...userProfile,
+      createdAt: null,
+      updatedAt: null,
+    },
+  };
+});
 exports.createRazorpayOrder = onCall({ region: REGION, secrets: [KEY_ID, KEY_SECRET] }, async (request) => { const caller = auth(request); const data = request.data || {}; const feeId = id(data.feeId); const context = await feeContext(request, feeId, data); return createOrder('fee', feeId, { payable: context.payable, tenantId: context.caller.tenantId, userId: caller.uid }); });
 exports.createSubscriptionOrder = onCall({ region: REGION, secrets: [KEY_ID, KEY_SECRET] }, async (request) => { const caller = auth(request); const data = request.data || {}; const subId = id(data.subId); fail(policy.rejectClientAmounts(data, ['amount', 'totalDue', 'amountPaid', 'planPrice'])); const callerResult = policy.callerAuthority({ authUid: caller.uid, profile: await profile(caller.uid) }); fail(callerResult); const snap = await db.collection('subscriptions').doc(subId).get(); fail(policy.authorizeSubscription({ caller: callerResult.caller, sub: snap.data(), subId })); const payable = policy.subscriptionPayable(snap.data()); fail(payable); return createOrder('subscription', subId, { payable, tenantId: snap.data()?.tenantId || snap.data()?.college || '', userId: caller.uid }); });
 

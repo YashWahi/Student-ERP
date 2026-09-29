@@ -1,10 +1,13 @@
 // src/App.jsx
-import { Suspense, lazy } from 'react';
+import { Suspense, lazy, useEffect, useState } from 'react';
 import { BrowserRouter, Routes, Route, Navigate, useNavigate, useLocation } from 'react-router-dom';
 import toast, { Toaster } from 'react-hot-toast';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { useAuthStore } from './store/authStore';
 import { useAuth } from './hooks/useAuth';
+import { auth } from './config/firebase';
+import { hasAuthorizedRole, matchesFirebaseSession } from './services/authProfile';
+import { getUserProfile, logoutUser } from './services/authService';
 import { ThemeProvider } from './components/theme/ThemeProvider';
 import ErrorBoundary from './components/common/ErrorBoundary';
 import './styles/globals.css';
@@ -23,7 +26,6 @@ const lazyRetry = (importFn) =>
 
 // Lazy imports for performance
 const Login = lazyRetry(() => import('./pages/auth/Login'));
-const Setup = lazyRetry(() => import('./pages/auth/Setup'));
 const NotFound = lazyRetry(() => import('./pages/common/NotFound'));
 
 // SuperAdmin
@@ -89,10 +91,47 @@ const queryClient = new QueryClient({
 });
 
 const ProtectedRoute = ({ children, allowedRoles }) => {
-  const { user, userProfile, role, loading } = useAuthStore();
+  const { user, userProfile, loading } = useAuthStore();
   const location = useLocation();
+  const firebaseUid = auth.currentUser?.uid;
+  const [authorizedRole, setAuthorizedRole] = useState(null);
+  const [profileLoading, setProfileLoading] = useState(true);
 
-  if (loading) {
+  useEffect(() => {
+    let active = true;
+    if (!firebaseUid) {
+      setAuthorizedRole(null);
+      setProfileLoading(false);
+      return () => {
+        active = false;
+      };
+    }
+
+    setProfileLoading(true);
+    getUserProfile(firebaseUid)
+      .then((profile) => {
+        if (active) {
+          setAuthorizedRole(profile?.role || null);
+        }
+      })
+      .catch((error) => {
+        console.error('Unable to verify the Firebase user profile for this route:', error);
+        if (active) {
+          setAuthorizedRole(null);
+        }
+      })
+      .finally(() => {
+        if (active) {
+          setProfileLoading(false);
+        }
+      });
+
+    return () => {
+      active = false;
+    };
+  }, [firebaseUid]);
+
+  if (loading || profileLoading) {
     return (
       <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', backgroundColor: 'var(--color-bg-primary)' }}>
         <div style={{ textAlign: 'center' }}>
@@ -103,23 +142,11 @@ const ProtectedRoute = ({ children, allowedRoles }) => {
     );
   }
 
-  if (!user) {
+  if (!matchesFirebaseSession(firebaseUid, user, userProfile)) {
     return <Navigate to="/login" state={{ from: location }} replace />;
   }
 
-  if (allowedRoles && allowedRoles.length > 0 && !allowedRoles.includes(role)) {
-    const ROLE_REDIRECT = {
-      superadmin: '/superadmin',
-      subadmin: '/subadmin',
-      admin: '/admin',
-      teacher: '/teacher',
-      student: '/student',
-      parent: '/parent',
-      staff: '/staff',
-    };
-    if (userProfile?.isImpersonating && role && ROLE_REDIRECT[role]) {
-      return <Navigate to={ROLE_REDIRECT[role]} replace />;
-    }
+  if (allowedRoles && allowedRoles.length > 0 && !hasAuthorizedRole(authorizedRole, allowedRoles)) {
     return <Navigate to="/unauthorized" replace />;
   }
 
@@ -134,41 +161,7 @@ const PageLoader = () => (
 
 const UnauthorizedPage = () => {
   const navigate = useNavigate();
-  const { role, user, logout, setUser, setUserProfile } = useAuthStore();
-
-  const handleQuickSwitch = (targetRole, email) => {
-    const roleNames = {
-      superadmin: 'Super Admin Owner',
-      subadmin: 'Sub-Admin Manager',
-      admin: 'Dr. Rajesh Kumar',
-      teacher: 'Mrs. Priya Sharma',
-      student: 'Arjun Verma',
-      parent: 'Mr. Suresh Verma',
-      staff: 'Ramesh Singh'
-    };
-    const ROLE_REDIRECT = {
-      superadmin: '/superadmin',
-      subadmin: '/subadmin',
-      admin: '/admin',
-      teacher: '/teacher',
-      student: '/student',
-      parent: '/parent',
-      staff: '/staff',
-    };
-    const newUser = { uid: `uid_${targetRole}`, email };
-    const newProfile = {
-      uid: `uid_${targetRole}`,
-      email,
-      name: roleNames[targetRole] || 'Authorized User',
-      role: targetRole,
-      tenantId: 'tenant_gvis',
-      branchId: 'branch_main',
-    };
-    setUser(newUser);
-    setUserProfile(newProfile);
-    toast.success(`🎉 Switched session to ${roleNames[targetRole]} (${targetRole.toUpperCase()})`);
-    navigate(ROLE_REDIRECT[targetRole], { replace: true });
-  };
+  const { role, user, logout } = useAuthStore();
 
   const handleReturnToDashboard = () => {
     const ROLE_REDIRECT = {
@@ -183,9 +176,15 @@ const UnauthorizedPage = () => {
     navigate(ROLE_REDIRECT[role] || '/login');
   };
 
-  const handleSignOut = () => {
-    logout();
-    navigate('/login');
+  const handleSignOut = async () => {
+    try {
+      await logoutUser();
+      logout();
+      navigate('/login');
+    } catch (error) {
+      console.error('Logout failed:', error);
+      toast.error('Logout failed. Please try again.');
+    }
   };
 
   return (
@@ -206,37 +205,6 @@ const UnauthorizedPage = () => {
           </button>
         </div>
 
-        {/* QUICK 1-CLICK ROLE ACCESS BUTTONS */}
-        <div style={{ paddingTop: 20, borderTop: '1px solid #F1F5F9', textAlign: 'left' }}>
-          <div style={{ fontSize: '0.72rem', fontWeight: 800, textTransform: 'uppercase', color: '#94A3B8', letterSpacing: '0.08em', marginBottom: 10, textAlign: 'center' }}>
-            QUICK ACCESS PERSONAS
-          </div>
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 8 }}>
-            {[
-              { label: 'Super Admin', roleKey: 'superadmin', email: 'superadmin@gmail.com', icon: '🛡️' },
-              { label: 'Branch Admin', roleKey: 'admin', email: 'admin@greenvalley.com', icon: '🏫' },
-              { label: 'Teacher', roleKey: 'teacher', email: 'teacher@greenvalley.com', icon: '👩‍🏫' },
-              { label: 'Student', roleKey: 'student', email: 'student@greenvalley.com', icon: '👨‍🎓' },
-              { label: 'Parent', roleKey: 'parent', email: 'parent@test.com', icon: '👨‍👩‍👧' },
-              { label: 'Staff', roleKey: 'staff', email: 'staff@greenvalley.com', icon: '👤' },
-            ].map(p => (
-              <button
-                key={p.roleKey}
-                type="button"
-                className="btn btn-ghost btn-sm flex items-center gap-2"
-                style={{
-                  justifyContent: 'flex-start', padding: '8px 10px', fontSize: '0.78rem',
-                  border: '1px solid #E2E8F0', borderRadius: 8, backgroundColor: '#F8FAFC',
-                  color: '#334155', fontWeight: 600
-                }}
-                onClick={() => handleQuickSwitch(p.roleKey, p.email)}
-              >
-                <span>{p.icon}</span>
-                <span>{p.label}</span>
-              </button>
-            ))}
-          </div>
-        </div>
       </div>
     </div>
   );
@@ -253,7 +221,7 @@ const AppRoutes = () => {
         <Route path="/reset-password" element={<Login initialView="reset" />} />
         <Route path="/invitation" element={<Login initialView="invitation" />} />
         <Route path="/onboarding" element={<Login initialView="onboarding" />} />
-        <Route path="/setup" element={<Setup />} />
+        <Route path="/setup" element={<Navigate to="/login" replace />} />
         <Route path="/unauthorized" element={<UnauthorizedPage />} />
 
         {/* SuperAdmin */}

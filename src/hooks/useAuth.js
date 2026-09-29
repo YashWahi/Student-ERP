@@ -1,40 +1,61 @@
 // src/hooks/useAuth.js
 import { useEffect } from 'react';
-import { onAuthStateChanged } from 'firebase/auth';
+import { onAuthStateChanged, signOut } from 'firebase/auth';
 import { auth } from '../config/firebase';
 import { useAuthStore } from '../store/authStore';
 import { getUserProfile } from '../services/authService';
 
 export const useAuth = () => {
-  const { user: storedUser, userProfile: storedProfile, setUser, setUserProfile, setLoading } = useAuthStore();
-
   useEffect(() => {
-    const unsub = onAuthStateChanged(auth, async (firebaseUser) => {
-      const currentProfile = useAuthStore.getState().userProfile;
-      if (currentProfile?.isImpersonating) {
-        setLoading(false);
+    let active = true;
+    let authChangeId = 0;
+    const unsubscribe = onAuthStateChanged(auth, async (firebaseUser) => {
+      const currentChangeId = ++authChangeId;
+      const { logout, setLoading, setUser, setUserProfile } = useAuthStore.getState();
+
+      if (!firebaseUser) {
+        logout();
         return;
       }
 
-      if (firebaseUser) {
-        setUser(firebaseUser);
-        try {
-          const profile = await getUserProfile(firebaseUser.uid);
-          if (profile && !useAuthStore.getState().userProfile?.isImpersonating) {
-            setUserProfile(profile);
-          }
-        } catch (e) {
-          console.warn('Profile fetch error:', e);
+      setLoading(true);
+      try {
+        const profile = await getUserProfile(firebaseUser.uid);
+        if (!active || currentChangeId !== authChangeId) {
+          return;
         }
-      } else {
-        // If no stored local session exists, set user to null
-        if (!storedUser && !storedProfile) {
-          setUser(null);
-          setUserProfile(null);
+
+        if (!profile) {
+          console.error('Authenticated Firebase user has no valid ERP profile.');
+          await signOut(auth);
+          return;
+        }
+
+        setUser(firebaseUser);
+        setUserProfile(profile);
+      } catch (error) {
+        if (!active || currentChangeId !== authChangeId) {
+          return;
+        }
+        console.error('Unable to resolve the authenticated Firebase user profile:', error);
+        try {
+          await signOut(auth);
+        } catch (signOutError) {
+          console.error('Unable to clear Firebase session after profile resolution failed:', signOutError);
+        }
+      } finally {
+        if (active && currentChangeId === authChangeId) {
+          setLoading(false);
         }
       }
-      setLoading(false);
+    }, (error) => {
+      console.error('Firebase authentication state listener failed:', error);
+      useAuthStore.getState().logout();
     });
-    return () => unsub();
+
+    return () => {
+      active = false;
+      unsubscribe();
+    };
   }, []);
 };

@@ -1,10 +1,11 @@
 // src/services/tenantService.js
-import { db } from '../config/firebase.js';
+import { auth, db } from '../config/firebase.js';
 import {
   collection, doc, getDoc, getDocs, setDoc, updateDoc, deleteDoc,
   query, where, orderBy, serverTimestamp
 } from 'firebase/firestore';
 import { logAuditEvent } from './auditService.js';
+import { createUserAccount } from './authService.js';
 import { DEFAULT_THEME, createTenantDefaultTheme } from '../components/theme/themeUtils.js';
 
 // DEFAULT MODULES ENTITLEMENT MATRIX
@@ -53,16 +54,19 @@ export const provisionNewCollegeTenant = async (provisionData) => {
     planTier = 'Standard',
     adminName,
     adminEmail,
-    adminPassword = 'password123',
-    creatorUid = 'superadmin',
+    adminPassword,
     themeConfig,
     websiteConfig,
     enabledModules,
   } = provisionData;
 
+  const creatorUid = auth.currentUser?.uid;
+  if (!creatorUid) {
+    throw new Error('Sign in with an authorized Firebase account before provisioning a tenant.');
+  }
+
   const tenantId = `tenant_${collegeCode.toLowerCase()}_${Date.now()}`;
   const branchId = `branch_main_${Date.now()}`;
-  const adminUid = `user_admin_${Date.now()}`;
   const subId = `sub_${Date.now()}`;
 
   const tenantDoc = {
@@ -96,110 +100,107 @@ export const provisionNewCollegeTenant = async (provisionData) => {
     updatedAtIso: new Date().toISOString(),
   };
 
-  // 1. Immediate local persistence for 0ms latency and offline resilience
+  const branchDoc = {
+    branchId,
+    tenantId,
+    name: `${collegeName} — Main Campus`,
+    code: `${collegeCode.toUpperCase()}-MAIN`,
+    address: `${address}, ${city}, ${state}`,
+    headAdminName: adminName,
+    headAdminEmail: adminEmail,
+    status: 'Active',
+    createdAt: serverTimestamp(),
+    updatedAt: serverTimestamp(),
+  };
+  const subDoc = {
+    id: subId,
+    subId,
+    tenantId,
+    college: collegeName,
+    collegeName,
+    plan: planTier,
+    planTier,
+    amount: planTier === 'Enterprise' ? 120000 : planTier === 'Premium' ? 48000 : planTier === 'Standard' ? 24000 : 12000,
+    billing: 'Annual',
+    billingCycle: 'Annual',
+    status: 'Active',
+    startDate: new Date().toISOString().split('T')[0],
+    expiryDate: new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toISOString().split('T')[0],
+    createdAt: serverTimestamp(),
+    updatedAt: serverTimestamp(),
+  };
+
+  const tenantRef = doc(db, 'tenants', tenantId);
+  const schoolRef = doc(db, 'schools', tenantId);
+  const branchRef = doc(db, 'branches', branchId);
+  const subscriptionRef = doc(db, 'subscriptions', subId);
+  try {
+    await Promise.all([
+      setDoc(tenantRef, { ...tenantDoc, createdAt: serverTimestamp(), updatedAt: serverTimestamp() }),
+      setDoc(schoolRef, { ...tenantDoc, createdAt: serverTimestamp(), updatedAt: serverTimestamp() }),
+      setDoc(branchRef, branchDoc),
+      setDoc(subscriptionRef, subDoc),
+    ]);
+  } catch (error) {
+    const cleanupResults = await Promise.allSettled([
+      deleteDoc(tenantRef),
+      deleteDoc(schoolRef),
+      deleteDoc(branchRef),
+      deleteDoc(subscriptionRef),
+    ]);
+    cleanupResults.forEach((result) => {
+      if (result.status === 'rejected') {
+        console.error('Tenant document rollback failed:', result.reason);
+      }
+    });
+    throw error;
+  }
+
+  let adminAccount;
+  try {
+    adminAccount = await createUserAccount({
+      email: adminEmail,
+      password: adminPassword,
+      name: adminName,
+      role: 'admin',
+      tenantId,
+      branchId,
+      phone,
+      schoolName: collegeName,
+      enabledModules: tenantDoc.enabledModules,
+    });
+  } catch (error) {
+    const cleanupResults = await Promise.allSettled([
+      deleteDoc(tenantRef),
+      deleteDoc(schoolRef),
+      deleteDoc(branchRef),
+      deleteDoc(subscriptionRef),
+    ]);
+    cleanupResults.forEach((result) => {
+      if (result.status === 'rejected') {
+        console.error('Tenant provisioning rollback failed:', result.reason);
+      }
+    });
+    throw error;
+  }
+
   try {
     const existingTenants = JSON.parse(localStorage.getItem('custom_tenants') || '[]');
     existingTenants.unshift(tenantDoc);
     localStorage.setItem('custom_tenants', JSON.stringify(existingTenants));
-
-    const existingUsers = JSON.parse(localStorage.getItem('custom_users') || '[]');
-    const adminUser = {
-      uid: adminUid,
-      email: adminEmail,
-      password: adminPassword,
-      name: adminName,
-      role: 'admin',
-      tenantId,
-      branchId,
-      status: 'Active',
-      schoolName: collegeName,
-    };
-    existingUsers.unshift(adminUser);
-    localStorage.setItem('custom_users', JSON.stringify(existingUsers));
-  } catch (e) {
-    console.warn('LocalStorage save error:', e);
+  } catch (error) {
+    console.warn('Tenant cache save failed:', error);
   }
 
-  // 2. Asynchronous Firestore Cloud Sync
-  try {
-    const tenantRef = doc(db, 'tenants', tenantId);
-    setDoc(tenantRef, {
-      ...tenantDoc,
-      createdAt: serverTimestamp(),
-      updatedAt: serverTimestamp()
-    }).catch(e => console.warn('Firestore setDoc tenant non-blocking:', e.message));
-
-    const schoolRef = doc(db, 'schools', tenantId);
-    setDoc(schoolRef, {
-      ...tenantDoc,
-      createdAt: serverTimestamp(),
-      updatedAt: serverTimestamp()
-    }).catch(e => console.warn('Firestore setDoc school non-blocking:', e.message));
-
-    const branchRef = doc(db, 'branches', branchId);
-    const branchDoc = {
-      branchId,
-      tenantId,
-      name: `${collegeName} — Main Campus`,
-      code: `${collegeCode.toUpperCase()}-MAIN`,
-      address: `${address}, ${city}, ${state}`,
-      headAdminName: adminName,
-      headAdminEmail: adminEmail,
-      status: 'Active',
-      createdAt: serverTimestamp(),
-      updatedAt: serverTimestamp(),
-    };
-    setDoc(branchRef, branchDoc).catch(e => console.warn('Firestore setDoc branch non-blocking:', e.message));
-
-    const adminUserRef = doc(db, 'users', adminUid);
-    const adminUserDoc = {
-      uid: adminUid,
-      email: adminEmail,
-      name: adminName,
-      password: adminPassword,
-      role: 'admin',
-      tenantId,
-      branchId,
-      status: 'Active',
-      enabledModules: DEFAULT_MODULE_CONFIG,
-      createdAt: serverTimestamp(),
-      updatedAt: serverTimestamp(),
-    };
-    setDoc(adminUserRef, adminUserDoc).catch(e => console.warn('Firestore setDoc user non-blocking:', e.message));
-
-    const subRef = doc(db, 'subscriptions', subId);
-    const subDoc = {
-      id: subId,
-      subId,
-      tenantId,
-      college: collegeName,
-      collegeName,
-      plan: planTier,
-      planTier,
-      amount: planTier === 'Enterprise' ? 120000 : planTier === 'Premium' ? 48000 : planTier === 'Standard' ? 24000 : 12000,
-      billing: 'Annual',
-      billingCycle: 'Annual',
-      status: 'Active',
-      startDate: new Date().toISOString().split('T')[0],
-      expiryDate: new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toISOString().split('T')[0],
-      createdAt: serverTimestamp(),
-      updatedAt: serverTimestamp(),
-    };
-    setDoc(subRef, subDoc).catch(e => console.warn('Firestore setDoc sub non-blocking:', e.message));
-  } catch (err) {
-    console.warn('Firestore setDoc fallback:', err.message);
-  }
-
-  // 3. Log Security Audit Event
   await logAuditEvent({
     action: 'CREATE_TENANT',
-    actor: 'Super Admin',
+    actor: creatorUid,
     target: collegeName,
     details: `Provisioned college tenant ${collegeCode} with ${planTier} plan and main branch.`,
     tenantId,
   });
 
-  return { tenantId, branchId, adminUid, subId };
+  return { tenantId, branchId, adminUid: adminAccount.user.uid, subId };
 };
 
 // SUBADMIN BRANCH PROVISIONING
@@ -214,6 +215,7 @@ export const provisionNewBranch = async (branchData) => {
     state,
     adminName,
     adminEmail,
+    adminPassword,
     tenantId = 'tenant_gvis',
   } = branchData;
 
@@ -236,11 +238,26 @@ export const provisionNewBranch = async (branchData) => {
     createdAtIso: new Date().toISOString(),
   };
 
+  const branchRef = doc(db, 'branches', branchId);
+  await setDoc(branchRef, { ...branchDoc, createdAt: serverTimestamp(), updatedAt: serverTimestamp() });
+
   try {
-    const branchRef = doc(db, 'branches', branchId);
-    await setDoc(branchRef, { ...branchDoc, createdAt: serverTimestamp(), updatedAt: serverTimestamp() });
-  } catch (err) {
-    console.warn('Firestore branch creation fallback:', err.message);
+    await createUserAccount({
+      email: adminEmail,
+      password: adminPassword,
+      name: adminName || 'Branch Admin',
+      role: 'admin',
+      tenantId,
+      branchId,
+      phone,
+    });
+  } catch (error) {
+    try {
+      await deleteDoc(branchRef);
+    } catch (cleanupError) {
+      console.error('Branch provisioning rollback failed:', cleanupError);
+    }
+    throw error;
   }
 
   try {
@@ -873,4 +890,3 @@ export const rollbackTenantTheme = async (tenantId, targetVersion, restoredBy = 
 
   return restoredConfig;
 };
-

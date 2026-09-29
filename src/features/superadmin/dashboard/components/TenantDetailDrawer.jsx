@@ -10,7 +10,7 @@ const TenantDetailDrawer = ({
   tenant,
   isOpen,
   onClose,
-  onImpersonate,
+  onTenantLogin,
   onRenew,
   onSuspend,
 }) => {
@@ -136,11 +136,11 @@ const TenantDetailDrawer = ({
               className="btn btn-primary btn-sm flex items-center gap-1"
               onClick={() => {
                 onClose();
-                onImpersonate && onImpersonate(tenant);
+                onTenantLogin && onTenantLogin(tenant);
               }}
             >
               <LogIn size={13} />
-              <span>Login as Admin</span>
+              <span>Open Tenant Login</span>
             </button>
           </div>
         </div>

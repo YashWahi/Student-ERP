@@ -324,27 +324,19 @@ const Login = ({ initialView = 'login' }) => {
 
 
       setUser(loggedUser);
-
       setUserProfile(userProfile);
-
       setLoading(false);
-
       setSubmitSuccess(true);
 
-
-
       const fromPath = location.state?.from?.pathname;
-
-      const roleDefaultPath = ROLE_REDIRECT[userProfile?.role || 'admin'] || '/admin';
-
+      const roleDefaultPath = ROLE_REDIRECT[userProfile.role];
+      if (!roleDefaultPath) {
+        throw new Error('Your ERP profile has an unsupported role. Contact your administrator.');
+      }
       let targetPath = roleDefaultPath;
 
-
-
-      if (fromPath && userProfile?.role && fromPath.startsWith(`/${userProfile.role}`)) {
-
+      if (fromPath && fromPath.startsWith(`/${userProfile.role}`)) {
         targetPath = fromPath;
-
       }
 
 
@@ -364,17 +356,20 @@ const Login = ({ initialView = 'login' }) => {
     } catch (err) {
 
       console.error('Firebase login error:', err);
-
       setIsSubmitting(false);
-
-      setStatusState('invalid_cred');
-
-      const msg = err.code === 'auth/invalid-credential' || err.code === 'auth/user-not-found' || err.code === 'auth/wrong-password'
-
+      const profileError = err.code === 'auth/profile-not-found';
+      const invalidCredentials = [
+        'auth/invalid-credential',
+        'auth/user-not-found',
+        'auth/wrong-password',
+        'auth/invalid-email',
+      ].includes(err.code);
+      setStatusState(profileError ? 'profile_error' : invalidCredentials ? 'invalid_cred' : 'none');
+      const msg = invalidCredentials
         ? 'Invalid email or password. Please check your credentials.'
-
-        : err.message || 'Authentication failed. Please check your network and credentials.';
-
+        : profileError
+          ? 'Your Firebase account has no valid ERP profile. Contact your administrator.'
+          : err.message || 'Authentication failed. Please check your network and credentials.';
       toast.error(msg);
 
     }
@@ -398,18 +393,12 @@ const Login = ({ initialView = 'login' }) => {
       setUserProfile(res.profile);
 
       setLoading(false);
-
       toast.success(`Signed in as ${res.profile.name}`);
-
-      const targetPath = ROLE_REDIRECT[res.profile?.role || 'admin'] || '/admin';
-
+      const targetPath = ROLE_REDIRECT[res.profile.role] || '/login';
       navigate(targetPath, { replace: true });
-
     } catch (err) {
-
       console.error('Google SSO Error:', err);
-
-      toast.error('Google Single Sign-On failed or was cancelled.');
+      toast.error(err.message || 'Google Single Sign-On failed or was cancelled.');
 
     } finally {
 
@@ -436,18 +425,12 @@ const Login = ({ initialView = 'login' }) => {
       setUserProfile(res.profile);
 
       setLoading(false);
-
       toast.success(`Signed in as ${res.profile.name}`);
-
-      const targetPath = ROLE_REDIRECT[res.profile?.role || 'admin'] || '/admin';
-
+      const targetPath = ROLE_REDIRECT[res.profile.role] || '/login';
       navigate(targetPath, { replace: true });
-
     } catch (err) {
-
       console.error('Microsoft SSO Error:', err);
-
-      toast.error('Microsoft 365 Sign-On failed or was cancelled.');
+      toast.error(err.message || 'Microsoft 365 Sign-On failed or was cancelled.');
 
     } finally {
 
@@ -660,13 +643,14 @@ const Login = ({ initialView = 'login' }) => {
                   <div style={{ marginBottom: 20 }}>
 
                     {statusState === 'invalid_cred' && (
-
                       <div style={{ padding: 12, backgroundColor: '#FEF2F2', border: '1px solid #FCA5A5', borderRadius: 8, fontSize: '0.8rem', color: '#991B1B', display: 'flex', alignItems: 'center', gap: 8 }}>
-
                         <AlertCircle size={16} /> Email or password is incorrect.
-
                       </div>
-
+                    )}
+                    {statusState === 'profile_error' && (
+                      <div style={{ padding: 12, backgroundColor: '#FEF2F2', border: '1px solid #FCA5A5', borderRadius: 8, fontSize: '0.8rem', color: '#991B1B', display: 'flex', alignItems: 'center', gap: 8 }}>
+                        <AlertCircle size={16} /> Your account does not have a valid ERP profile. Contact your administrator.
+                      </div>
                     )}
 
                     {statusState === 'suspended' && (
@@ -1070,4 +1054,3 @@ const Login = ({ initialView = 'login' }) => {
 
 
 export default Login;
-

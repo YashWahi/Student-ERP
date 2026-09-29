@@ -14,6 +14,7 @@ import { parseExcelOrCSV, normalizeStudents } from '../../utils/excelParser';
 import toast from 'react-hot-toast';
 
 import { useAuthStore } from '../../store/authStore';
+import { createUserAccount } from '../../services/authService';
 
 const StudentList = () => {
   const navigate = useNavigate();
@@ -64,7 +65,7 @@ const StudentList = () => {
   const [addPhone, setAddPhone] = useState('');
   const [addParentEmail, setAddParentEmail] = useState('');
   const [addStudentEmail, setAddStudentEmail] = useState('');
-  const [addStudentPassword, setAddStudentPassword] = useState('student123');
+  const [addStudentPassword, setAddStudentPassword] = useState('');
   const [addCategory, setAddCategory] = useState('GEN');
   const [addGender, setAddGender] = useState('Male');
 
@@ -124,30 +125,45 @@ const StudentList = () => {
   }, [activeCollegeStudents, classFilter, categoryFilter, statusFilter, searchQuery]);
 
   // Handlers
-  const handleQuickAddStudent = (e) => {
+  const handleQuickAddStudent = async (e) => {
     e.preventDefault();
-    if (!addStudentName) return;
-    const sEmail = (addStudentEmail || `${addStudentName.toLowerCase().replace(/\s+/g, '')}@gmail.com`).toLowerCase();
-    const sPassword = addStudentPassword || 'student123';
+    if (!addStudentName.trim() || !addStudentEmail.trim()) {
+      toast.error('Student name and a valid login email are required.');
+      return;
+    }
 
-    const created = addStudent({
-      tenantId: activeTenantId || 'tenant_gvis',
-      name: addStudentName,
-      rollNo: addRollNo,
-      admissionNo: addAdmissionNo,
-      class: addClassName,
-      parentName: addParentName,
-      phone: addPhone,
-      parentEmail: addParentEmail,
-      studentEmail: sEmail,
-      password: sPassword,
-      category: addCategory,
-      gender: addGender,
-    });
+    try {
+      const account = await createUserAccount({
+        email: addStudentEmail.trim().toLowerCase(),
+        password: addStudentPassword || undefined,
+        name: addStudentName.trim(),
+        role: 'student',
+        tenantId: activeTenantId,
+        branchId: userProfile?.branchId || null,
+        phone: addPhone,
+      });
+      const created = addStudent({
+        uid: account.user.uid,
+        tenantId: activeTenantId,
+        name: addStudentName.trim(),
+        rollNo: addRollNo,
+        admissionNo: addAdmissionNo,
+        class: addClassName,
+        parentName: addParentName,
+        phone: addPhone,
+        parentEmail: addParentEmail,
+        studentEmail: account.profile.email,
+        category: addCategory,
+        gender: addGender,
+      });
 
-    toast.success(`🎉 Student ${created.name} added to roster! Login: ${sEmail}`);
-    setShowAddStudentModal(false);
-    setAddStudentName(''); setAddRollNo(''); setAddAdmissionNo(''); setAddParentName(''); setAddPhone(''); setAddParentEmail(''); setAddStudentEmail(''); setAddStudentPassword('student123');
+      toast.success(`${created.name} added. Use Forgot Password if no password was provided.`);
+      setShowAddStudentModal(false);
+      setAddStudentName(''); setAddRollNo(''); setAddAdmissionNo(''); setAddParentName(''); setAddPhone(''); setAddParentEmail(''); setAddStudentEmail(''); setAddStudentPassword('');
+    } catch (error) {
+      console.error('Unable to provision student account:', error);
+      toast.error(error.message || 'Unable to provision student account.');
+    }
   };
 
   const handleEditStudent = (e) => {
@@ -640,10 +656,13 @@ const StudentList = () => {
               <input className="form-input" type="email" placeholder="e.g. student@gmail.com" value={addStudentEmail} onChange={e => setAddStudentEmail(e.target.value)} required />
             </div>
             <div className="form-group">
-              <label className="form-label">Student Login Password *</label>
-              <input className="form-input" type="text" placeholder="e.g. student123" value={addStudentPassword} onChange={e => setAddStudentPassword(e.target.value)} required />
+              <label className="form-label">Initial Password (Optional)</label>
+              <input className="form-input" type="password" autoComplete="new-password" value={addStudentPassword} onChange={e => setAddStudentPassword(e.target.value)} />
             </div>
           </div>
+          <p style={{ fontSize: '0.75rem', color: '#64748B' }}>
+            If empty, a random password is generated. The student can use Forgot Password to set their own.
+          </p>
           <div className="flex justify-end gap-2" style={{ marginTop: 20 }}>
             <button type="button" className="btn btn-ghost" onClick={() => setShowAddStudentModal(false)}>Cancel</button>
             <button type="submit" className="btn btn-primary">Add Student</button>

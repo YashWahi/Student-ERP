@@ -12,6 +12,7 @@ import {
 import { useStudentStore } from '../../store/studentStore';
 import { useCrmStore } from '../../store/crmStore';
 import { useAuthStore } from '../../store/authStore';
+import { createUserAccount } from '../../services/authService';
 import toast from 'react-hot-toast';
 
 const admissionSchema = z.object({
@@ -21,8 +22,9 @@ const admissionSchema = z.object({
   gender: z.enum(['Male', 'Female', 'Other']),
   category: z.enum(['GEN', 'OBC', 'SC', 'ST']),
   bloodGroup: z.string().optional(),
-  studentEmail: z.string().email('Invalid email format').optional().or(z.literal('')),
+  studentEmail: z.string().email('A valid student email is required'),
   studentPhone: z.string().optional(),
+  password: z.string().optional(),
 
   // Step 2: Parent Info
   parentName: z.string().min(2, 'Parent full name is required'),
@@ -63,6 +65,7 @@ const StudentAdmission = () => {
   const { updateLeadStage } = useCrmStore();
   const { userProfile, tenantId: storeTenantId } = useAuthStore();
   const activeTenantId = userProfile?.tenantId || storeTenantId || 'tenant_gvis';
+  const activeBranchId = userProfile?.branchId || null;
 
   const [step, setStep] = useState(1);
   const [parentMatch, setParentMatch] = useState(null);
@@ -171,12 +174,22 @@ const StudentAdmission = () => {
   const handleFinalSubmit = async (data) => {
     setSubmitting(true);
     try {
+      const account = await createUserAccount({
+        email: data.studentEmail.trim().toLowerCase(),
+        password: data.password || undefined,
+        name: data.studentName.trim(),
+        role: 'student',
+        tenantId: activeTenantId,
+        branchId: activeBranchId,
+        phone: data.studentPhone || data.parentPhone,
+      });
+
       // Save Student to store. Payment must be verified securely via the backend/Razorpay gateway.
-      const newStudent = addStudent({
+      addStudent({
+        uid: account.user.uid,
         tenantId: activeTenantId,
         name: data.studentName,
         studentEmail: data.studentEmail,
-        password: data.password || 'student123',
         rollNo: data.rollNo,
         admissionNo: data.admissionNo,
         className: data.className,
@@ -305,13 +318,14 @@ const StudentAdmission = () => {
 
                     <div className="form-group">
                       <label className="form-label">Student Login Email ID *</label>
-                      <input type="email" className="form-input" placeholder="e.g. student@gmail.com" {...register('studentEmail')} />
+                      <input type="email" className="form-input" placeholder="e.g. student@gmail.com" required {...register('studentEmail')} />
                       {errors.studentEmail && <span style={{ color: '#DC2626', fontSize: '0.75rem', marginTop: 4 }}>{errors.studentEmail.message}</span>}
                     </div>
 
                     <div className="form-group">
-                      <label className="form-label">Student Login Password *</label>
-                      <input type="text" className="form-input" placeholder="e.g. student123" defaultValue="student123" {...register('password')} />
+                      <label className="form-label">Initial Password (Optional)</label>
+                      <input type="password" className="form-input" autoComplete="new-password" {...register('password')} />
+                      <small style={{ color: '#64748B' }}>If empty, a random password is generated. The student can use Forgot Password to set their own.</small>
                     </div>
                   </div>
                 </div>

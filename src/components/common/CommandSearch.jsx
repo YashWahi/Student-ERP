@@ -4,7 +4,7 @@ import { useNavigate } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
   Search, GraduationCap, Users, Building, CreditCard, Bell, ArrowRight,
-  X, Palette, Layers, ShieldCheck, FileText, Settings, Key, UserCheck, ShieldAlert
+  X, Palette, Layers, ShieldCheck, FileText, Settings, Key, ShieldAlert
 } from 'lucide-react';
 import { useStudentStore } from '../../store/studentStore';
 import { getColleges, getSubscriptions } from '../../services/tenantService';
@@ -84,23 +84,7 @@ const CommandSearch = ({ isOpen, onClose }) => {
       icon: <GraduationCap size={16} />
     }));
 
-    // Registered users from localStorage
-    let userItems = [];
-    try {
-      const localUsers = JSON.parse(localStorage.getItem('custom_users') || '[]');
-      userItems = localUsers.map(u => ({
-        id: `user_${u.uid || u.email}`,
-        title: `${u.name} (${u.role.toUpperCase()})`,
-        type: 'User',
-        info: `Email: ${u.email} · School: ${u.schoolName || u.tenantId}`,
-        path: '/superadmin/users',
-        icon: <UserCheck size={16} />
-      }));
-    } catch {
-      userItems = [];
-    }
-
-    return [...STATIC_ROUTES, ...collegeItems, ...userItems, ...subscriptionItems, ...studentItems, ...auditItems];
+    return [...STATIC_ROUTES, ...collegeItems, ...subscriptionItems, ...studentItems, ...auditItems];
   }, [colleges, subscriptions, auditLogs, students]);
 
   const filtered = query.trim()
