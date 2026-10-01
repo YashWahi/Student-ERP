@@ -62,7 +62,7 @@ const SuperAdminDashboard = () => {
     handleResolveAlert,
     handleRenewSubscription,
     handleSuspendTenant,
-    handleImpersonateAdmin,
+    handleOpenTenantLogin,
     handleExportTenantsCSV,
     handleExportPaymentsCSV,
     handleSaveWidgetPrefs,
@@ -171,7 +171,7 @@ const SuperAdminDashboard = () => {
           pageSize={pageSize}
           onExportCSV={handleExportTenantsCSV}
           onViewTenant={(t) => setSelectedTenantForDrawer(t)}
-          onImpersonate={handleImpersonateAdmin}
+          onTenantLogin={handleOpenTenantLogin}
         />
       )}
 
@@ -230,7 +230,7 @@ const SuperAdminDashboard = () => {
         tenant={selectedTenantForDrawer}
         isOpen={Boolean(selectedTenantForDrawer)}
         onClose={() => setSelectedTenantForDrawer(null)}
-        onImpersonate={handleImpersonateAdmin}
+        onTenantLogin={handleOpenTenantLogin}
         onRenew={handleRenewSubscription}
         onSuspend={handleSuspendTenant}
       />

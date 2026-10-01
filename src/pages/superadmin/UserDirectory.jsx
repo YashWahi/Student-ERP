@@ -1,19 +1,20 @@
 // src/pages/superadmin/UserDirectory.jsx
 import { useState, useEffect, useMemo } from 'react';
-import { useNavigate } from 'react-router-dom';
 import {
   Users, Search, Download, Plus, Filter, ShieldCheck,
-  UserX, UserCheck, RefreshCw, Building, Mail, Phone, Lock, Eye
+  UserX, UserCheck, RefreshCw, Building, Mail, Phone, Eye
 } from 'lucide-react';
+import { collection, doc, getDocs, serverTimestamp, updateDoc } from 'firebase/firestore';
+import { auth, db } from '../../config/firebase';
 import DataTable from '../../components/common/DataTable';
 import Modal from '../../components/common/Modal';
 import { getColleges } from '../../services/tenantService';
 import { exportToCSV } from '../../services/exportService';
 import { logAuditEvent } from '../../services/auditService';
+import { createUserAccount } from '../../services/authService';
 import toast from 'react-hot-toast';
 
 const UserDirectory = () => {
-  const navigate = useNavigate();
   const [users, setUsers] = useState([]);
   const [colleges, setColleges] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -27,7 +28,6 @@ const UserDirectory = () => {
     role: 'admin',
     tenantId: '',
     phone: '',
-    password: '',
   });
 
   const loadAllUsers = async () => {
@@ -36,38 +36,18 @@ const UserDirectory = () => {
       const realColleges = await getColleges();
       setColleges(realColleges);
 
-      // Aggregate all users across custom_users, custom_tenants, and standard seed accounts
-      const localUsers = JSON.parse(localStorage.getItem('custom_users') || '[]');
-      const collegeAdmins = realColleges.map((c, i) => ({
-        uid: `admin_${c.id || c.tenantId}`,
-        name: c.adminName || `${c.name} Admin`,
-        email: c.adminEmail || c.email || `admin@${c.code.toLowerCase()}.edu`,
-        role: 'admin',
-        schoolName: c.name,
-        tenantId: c.id || c.tenantId,
-        status: c.status === 'Suspended' ? 'Suspended' : 'Active',
-        lastLogin: 'Today, 09:40 AM',
+      const userSnapshot = await getDocs(collection(db, 'users'));
+      setUsers(userSnapshot.docs.map((userDoc) => {
+        const profile = userDoc.data();
+        const tenant = realColleges.find((college) => (college.id || college.tenantId) === profile.tenantId);
+        return {
+          ...profile,
+          uid: userDoc.id,
+          schoolName: profile.schoolName || tenant?.name || 'Platform',
+          status: profile.status || (profile.isActive === false ? 'Suspended' : 'Active'),
+          lastLogin: profile.lastLogin || 'Unknown',
+        };
       }));
-
-      const defaultPersonas = [
-        { uid: 'superadmin_1', name: 'Super Admin Owner', email: 'superadmin@gmail.com', role: 'superadmin', schoolName: 'Platform Global SaaS', tenantId: 'platform', status: 'Active', lastLogin: 'Just now' },
-        { uid: 'subadmin_1', name: 'Sub-Admin Manager', email: 'subadmin@gmail.com', role: 'subadmin', schoolName: 'Enterprise Regional Group', tenantId: 'tenant_gvis', status: 'Active', lastLogin: 'Yesterday' },
-        { uid: 'teacher_1', name: 'Mrs. Priya Sharma', email: 'teacher@greenvalley.com', role: 'teacher', schoolName: 'Green Valley International', tenantId: 'tenant_gvis', status: 'Active', lastLogin: '2h ago' },
-        { uid: 'student_1', name: 'Arjun Verma', email: 'student@greenvalley.com', role: 'student', schoolName: 'Green Valley International', tenantId: 'tenant_gvis', status: 'Active', lastLogin: '3h ago' },
-        { uid: 'parent_1', name: 'Mr. Suresh Verma', email: 'parent@test.com', role: 'parent', schoolName: 'Green Valley International', tenantId: 'tenant_gvis', status: 'Active', lastLogin: 'Yesterday' },
-        { uid: 'staff_1', name: 'Ramesh Singh', email: 'staff@greenvalley.com', role: 'staff', schoolName: 'Green Valley International', tenantId: 'tenant_gvis', status: 'Active', lastLogin: '5h ago' },
-      ];
-
-      const combined = [...localUsers, ...collegeAdmins, ...defaultPersonas];
-      const seen = new Set();
-      const deduped = combined.filter(u => {
-        const key = (u.email || u.uid || '').toLowerCase().trim();
-        if (seen.has(key)) return false;
-        seen.add(key);
-        return true;
-      });
-
-      setUsers(deduped);
       if (realColleges.length > 0 && !newUser.tenantId) {
         setNewUser(prev => ({ ...prev, tenantId: realColleges[0].id }));
       }
@@ -84,20 +64,22 @@ const UserDirectory = () => {
 
   const handleToggleStatus = async (user) => {
     const newStatus = user.status === 'Suspended' ? 'Active' : 'Suspended';
-    const updated = users.map(u => u.uid === user.uid ? { ...u, status: newStatus } : u);
-    setUsers(updated);
-
     try {
-      const localUsers = JSON.parse(localStorage.getItem('custom_users') || '[]');
-      const updatedLocal = localUsers.map(u => u.uid === user.uid ? { ...u, status: newStatus } : u);
-      localStorage.setItem('custom_users', JSON.stringify(updatedLocal));
-    } catch (e) {
-      console.warn('LocalStorage error:', e);
+      await updateDoc(doc(db, 'users', user.uid), {
+        status: newStatus,
+        isActive: newStatus === 'Active',
+        updatedAt: serverTimestamp(),
+      });
+      setUsers(users.map(u => u.uid === user.uid ? { ...u, status: newStatus } : u));
+    } catch (error) {
+      console.error('Unable to update user status:', error);
+      toast.error('Unable to update this user account.');
+      return;
     }
 
     await logAuditEvent({
       action: newStatus === 'Suspended' ? 'SUSPEND_USER' : 'ACTIVATE_USER',
-      actor: 'Super Admin',
+      actor: auth.currentUser?.uid || 'unknown',
       target: user.email,
       details: `User status changed to ${newStatus} for role ${user.role} (${user.name})`,
       tenantId: user.tenantId,
@@ -113,38 +95,33 @@ const UserDirectory = () => {
       return;
     }
 
-    const created = {
-      uid: `user_${Date.now()}`,
-      name: newUser.name,
-      email: newUser.email.toLowerCase().trim(),
-      role: newUser.role,
-      tenantId: newUser.tenantId || 'tenant_platform',
-      schoolName: colleges.find(c => c.id === newUser.tenantId)?.name || 'Platform',
-      phone: newUser.phone || '+91 98765 43210',
-      status: 'Active',
-      lastLogin: 'Never',
-    };
-
     try {
-      const existing = JSON.parse(localStorage.getItem('custom_users') || '[]');
-      existing.unshift(created);
-      localStorage.setItem('custom_users', JSON.stringify(existing));
-    } catch (e) {
-      console.warn('LocalStorage error:', e);
+      const tenant = colleges.find((college) => (college.id || college.tenantId) === newUser.tenantId);
+      const created = await createUserAccount({
+        name: newUser.name.trim(),
+        email: newUser.email.trim().toLowerCase(),
+        role: newUser.role,
+        tenantId: newUser.tenantId || null,
+        phone: newUser.phone,
+        schoolName: tenant?.name || '',
+      });
+
+      await logAuditEvent({
+        action: 'CREATE_USER',
+        actor: auth.currentUser?.uid || 'unknown',
+        target: created.user.email,
+        details: `Created new ${created.profile.role} user: ${created.profile.name} (${created.profile.schoolName || created.profile.tenantId})`,
+        tenantId: created.profile.tenantId,
+      });
+
+      toast.success(`User ${created.profile.name} created. Ask them to use Forgot Password to set their login password.`);
+      setIsAddUserOpen(false);
+      setNewUser({ name: '', email: '', role: 'admin', tenantId: colleges[0]?.id || '', phone: '' });
+      await loadAllUsers();
+    } catch (error) {
+      console.error('Unable to provision user account:', error);
+      toast.error(error.message || 'Unable to provision user account.');
     }
-
-    await logAuditEvent({
-      action: 'CREATE_USER',
-      actor: 'Super Admin',
-      target: created.email,
-      details: `Created new ${created.role} user: ${created.name} (${created.schoolName})`,
-      tenantId: created.tenantId,
-    });
-
-    toast.success(`🎉 User ${created.name} (${created.role.toUpperCase()}) created successfully!`);
-    setIsAddUserOpen(false);
-    setNewUser({ name: '', email: '', role: 'admin', tenantId: colleges[0]?.id || '', phone: '', password: '' });
-    loadAllUsers();
   };
 
   const filteredUsers = useMemo(() => {
@@ -375,6 +352,7 @@ const UserDirectory = () => {
               <select
                 className="form-select"
                 value={newUser.tenantId}
+                required
                 onChange={e => setNewUser({ ...newUser, tenantId: e.target.value })}
               >
                 {colleges.map(c => (
@@ -393,6 +371,10 @@ const UserDirectory = () => {
               onChange={e => setNewUser({ ...newUser, phone: e.target.value })}
             />
           </div>
+
+          <p style={{ fontSize: '0.75rem', color: '#64748B', marginBottom: 16 }}>
+            A random password is generated. The new user can use Forgot Password to set their own.
+          </p>
 
           <div className="flex justify-end gap-3">
             <button type="button" className="btn btn-ghost" onClick={() => setIsAddUserOpen(false)}>

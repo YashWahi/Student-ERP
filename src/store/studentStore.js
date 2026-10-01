@@ -2,6 +2,8 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 
+const removeStoredPasswords = (students = []) => students.map(({ password: _password, ...student }) => student);
+
 const INITIAL_STUDENTS = [
   {
     id: 'st_101',
@@ -163,9 +165,8 @@ export const useStudentStore = create(
       students: INITIAL_STUDENTS,
 
       addStudent: (studentData) => {
-        const id = `st_${Date.now()}`;
+        const id = studentData.uid || `st_${Date.now()}`;
         const sEmail = (studentData.studentEmail || studentData.email || studentData.parentEmail || `${studentData.name.toLowerCase().replace(/\s+/g, '')}@gmail.com`).toLowerCase();
-        const sPassword = studentData.password || 'student123';
 
         const newStudent = {
           id,
@@ -174,7 +175,6 @@ export const useStudentStore = create(
           admissionNo: studentData.admissionNo || `ADM-2026-${String(get().students.length + 101).padStart(3, '0')}`,
           name: studentData.name,
           studentEmail: sEmail,
-          password: sPassword,
           class: studentData.class || studentData.className || '10-A',
           parentName: studentData.parentName || 'N/A',
           phone: studentData.phone || studentData.parentPhone || '',
@@ -194,24 +194,6 @@ export const useStudentStore = create(
           ],
           feeReceipt: studentData.feeReceipt || null,
         };
-
-        try {
-          const customUsers = JSON.parse(localStorage.getItem('custom_users') || '[]');
-          customUsers.unshift({
-            uid: id,
-            email: sEmail,
-            password: sPassword,
-            name: studentData.name,
-            role: 'student',
-            tenantId: studentData.tenantId || 'tenant_gvis',
-            branchId: 'branch_main',
-            status: 'Active',
-            schoolName: 'Student Portal'
-          });
-          localStorage.setItem('custom_users', JSON.stringify(customUsers));
-        } catch (e) {
-          console.warn('LocalStorage custom_users error:', e);
-        }
 
         set((state) => ({
           students: [newStudent, ...state.students]
@@ -303,9 +285,29 @@ export const useStudentStore = create(
       },
 
       resetStudents: () => set({ students: INITIAL_STUDENTS }),
+      removePersistedPasswords: () => set((state) => ({
+        students: removeStoredPasswords(state.students),
+      })),
     }),
     {
       name: 'students-roster-storage',
+      version: 1,
+      migrate: (persistedState) => ({
+        ...persistedState,
+        students: removeStoredPasswords(persistedState?.students),
+      }),
+      merge: (persistedState, currentState) => ({
+        ...currentState,
+        ...persistedState,
+        students: removeStoredPasswords(persistedState?.students || currentState.students),
+      }),
+      onRehydrateStorage: () => (state, error) => {
+        if (error) {
+          console.error('Unable to restore student records:', error);
+          return;
+        }
+        state?.removePersistedPasswords();
+      },
     }
   )
 );

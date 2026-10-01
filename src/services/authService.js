@@ -3,118 +3,56 @@ import {
   signInWithEmailAndPassword,
   signOut,
   sendPasswordResetEmail,
-  createUserWithEmailAndPassword,
-  updateProfile,
   signInWithPopup,
   GoogleAuthProvider,
   OAuthProvider,
 } from 'firebase/auth';
-import { doc, getDoc, setDoc, collection, query, where, getDocs, serverTimestamp } from 'firebase/firestore';
-import { auth, db } from '../config/firebase.js';
+import { httpsCallable } from 'firebase/functions';
+import { doc, getDoc } from 'firebase/firestore';
+import { auth, db, functions } from '../config/firebase.js';
+import { isAuthorizedUserProfile } from './authProfile.js';
 
-// Establish the real Firebase Auth identity needed by callable Cloud Functions.
-// loginUser() may resolve an application profile from LocalStorage or Firestore,
-// but that application object is not Firebase Authentication and cannot supply
-// request.auth. This helper is a side effect only: it signs the existing Auth
-// account in when possible and returns control to the unchanged profile logic.
-// A failure preserves the existing login behavior; Cloud Functions must still
-// reject payment calls because request.auth remains mandatory server-side.
-const ensureFirebaseCallableIdentity = async (cleanEmail, password) => {
-  if (auth.currentUser) {
-    return auth.currentUser;
-  }
+const createErpUser = httpsCallable(functions, 'createErpUser');
 
+const profileNotFoundError = () => {
+  const error = new Error('No active, valid ERP user profile is assigned to this Firebase account.');
+  error.code = 'auth/profile-not-found';
+  return error;
+};
+
+const getAuthenticatedProfile = async (user) => {
   try {
-    const credential = await signInWithEmailAndPassword(
-      auth,
-      cleanEmail,
-      password
-    );
-    return credential.user;
+    const profile = await getUserProfile(user.uid);
+    if (!profile) {
+      throw profileNotFoundError();
+    }
+    return profile;
   } catch (error) {
-    console.warn(
-      'Firebase callable identity unavailable:',
-      error?.code || error?.message
-    );
-    return null;
+    try {
+      await signOut(auth);
+    } catch (signOutError) {
+      console.error('Unable to clear Firebase session after profile resolution failed:', signOutError);
+    }
+    throw error;
   }
 };
 
 export const loginUser = async (email, password) => {
   const cleanEmail = (email || '').toLowerCase().trim();
-
-  // 1. Authenticate with Firebase strictly. No bypasses.
   const cred = await signInWithEmailAndPassword(auth, cleanEmail, password);
-  // 2. Retrieve user profile based on the authenticated UID
-  let profile = await getUserProfile(cred.user.uid);
-
-  // 3. If no profile in 'users', check if they are a tenant admin in 'tenants'
-  if (!profile) {
-    const tenantsRef = collection(db, 'tenants');
-    const snap = await getDocs(tenantsRef);
-    const matchedTenantDoc = snap.docs.find(d => {
-      const data = d.data();
-      return (data.email || '').toLowerCase().trim() === cleanEmail || (data.adminEmail || '').toLowerCase().trim() === cleanEmail;
-    });
-
-    if (matchedTenantDoc) {
-      const tenantData = matchedTenantDoc.data();
-      profile = {
-        uid: cred.user.uid,
-        email: cleanEmail,
-        name: tenantData.name || 'College Admin',
-        role: 'admin',
-        tenantId: tenantData.tenantId || matchedTenantDoc.id,
-        branchId: 'branch_main',
-        status: 'Active',
-        schoolName: tenantData.name,
-      };
-    } else {
-      // Do NOT infer roles or grant access without an explicit profile
-      throw new Error('auth/user-not-found');
-    }
-  }
-
+  const profile = await getAuthenticatedProfile(cred.user);
   return { user: cred.user, profile };
 };
 
-export const loginWithGoogle = async () => {
-  const provider = new GoogleAuthProvider();
+const loginWithProvider = async (provider) => {
   const cred = await signInWithPopup(auth, provider);
-  let profile = await getUserProfile(cred.user.uid);
-  if (!profile) {
-    profile = {
-      uid: cred.user.uid,
-      email: cred.user.email,
-      name: cred.user.displayName || 'Google User',
-      role: 'admin',
-      tenantId: 'tenant_gvis',
-      branchId: 'branch_main',
-      createdAt: serverTimestamp(),
-    };
-    await setDoc(doc(db, 'users', cred.user.uid), profile);
-  }
+  const profile = await getAuthenticatedProfile(cred.user);
   return { user: cred.user, profile };
 };
 
-export const loginWithMicrosoft = async () => {
-  const provider = new OAuthProvider('microsoft.com');
-  const cred = await signInWithPopup(auth, provider);
-  let profile = await getUserProfile(cred.user.uid);
-  if (!profile) {
-    profile = {
-      uid: cred.user.uid,
-      email: cred.user.email,
-      name: cred.user.displayName || 'Microsoft User',
-      role: 'admin',
-      tenantId: 'tenant_gvis',
-      branchId: 'branch_main',
-      createdAt: serverTimestamp(),
-    };
-    await setDoc(doc(db, 'users', cred.user.uid), profile);
-  }
-  return { user: cred.user, profile };
-};
+export const loginWithGoogle = () => loginWithProvider(new GoogleAuthProvider());
+
+export const loginWithMicrosoft = () => loginWithProvider(new OAuthProvider('microsoft.com'));
 
 export const logoutUser = async () => {
   await signOut(auth);
@@ -127,7 +65,16 @@ export const resetPassword = async (email) => {
 export const getUserProfile = async (uid) => {
   const ref = doc(db, 'users', uid);
   const snap = await getDoc(ref);
-  return snap.exists() ? { id: snap.id, ...snap.data() } : null;
+  if (!snap.exists()) {
+    return null;
+  }
+
+  const data = snap.data();
+  if (!isAuthorizedUserProfile(uid, data)) {
+    return null;
+  }
+
+  return { id: snap.id, ...data, uid };
 };
 
 export const createUserAccount = async ({
@@ -139,24 +86,29 @@ export const createUserAccount = async ({
   branchId = null,
   phone = '',
   avatar = '',
+  subject = '',
+  qualification = '',
+  schoolName = '',
+  enabledModules = null,
 }) => {
-  const cred = await createUserWithEmailAndPassword(auth, email, password);
-  await updateProfile(cred.user, { displayName: name });
-
-  const profileData = {
-    uid: cred.user.uid,
+  const result = await createErpUser({
     email,
     name,
+    password,
     role,
     tenantId,
     branchId,
     phone,
     avatar,
-    isActive: true,
-    createdAt: serverTimestamp(),
-    updatedAt: serverTimestamp(),
-  };
+    subject,
+    qualification,
+    schoolName,
+    enabledModules,
+  });
 
-  await setDoc(doc(db, 'users', cred.user.uid), profileData);
-  return { user: cred.user, profile: profileData };
+  const account = result.data;
+  if (!account?.user?.uid || account.profile?.uid !== account.user.uid) {
+    throw new Error('User provisioning returned an invalid account profile.');
+  }
+  return account;
 };

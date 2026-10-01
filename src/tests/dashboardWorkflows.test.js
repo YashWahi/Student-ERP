@@ -1,27 +1,7 @@
 // src/tests/dashboardWorkflows.test.js
 import { calculateSafeTrend, calculateTenantKPIs } from '../features/superadmin/dashboard/utils/kpiCalculator.js';
 
-console.log('🧪 Running SuperAdmin Dashboard Workflows & Security Verification Suite...\n');
-
-// Test 1: Impersonation Payload Validation
-const mockSuperAdmin = { role: 'superadmin', uid: 'uid_superadmin' };
-const targetTenant = { id: 'tenant_oxford', name: 'Oxford International', code: 'OXF', email: 'admin@oxford.edu' };
-
-const impersonatedProfile = {
-  uid: `impersonated_admin_${targetTenant.id}`,
-  email: targetTenant.email,
-  name: `${targetTenant.name} Admin`,
-  role: 'admin',
-  tenantId: targetTenant.id,
-  branchId: 'branch_main',
-  schoolName: targetTenant.name,
-  isImpersonating: true,
-};
-
-if (!impersonatedProfile.isImpersonating || impersonatedProfile.tenantId !== 'tenant_oxford' || impersonatedProfile.role !== 'admin') {
-  throw new Error('FAIL: Impersonation profile construction is invalid');
-}
-console.log('  ✅ Secure impersonation payload & tenant isolation scope verified');
+console.log('🧪 Running SuperAdmin Dashboard Workflow Verification Suite...\n');
 
 // Test 2: Dynamic Subscription Renewals Calculation
 const initialTenants = [
