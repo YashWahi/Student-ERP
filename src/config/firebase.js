@@ -29,7 +29,7 @@ export const functions = getFunctions(app, 'asia-south1');
 
 // Set VITE_USE_FIREBASE_EMULATORS=true only for the local Firebase Emulator Suite.
 // This is opt-in so the normal application always targets its configured Firebase project.
-const useEmulators = env.VITE_USE_FIREBASE_EMULATORS === 'true';
+const useEmulators = import.meta.env.DEV === true && env.VITE_USE_FIREBASE_EMULATORS === 'true';
 if (useEmulators && typeof window !== 'undefined') {
   connectAuthEmulator(auth, 'http://127.0.0.1:9099', { disableWarnings: true });
   connectFirestoreEmulator(db, '127.0.0.1', 8080);
