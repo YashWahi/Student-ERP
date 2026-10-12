@@ -1,0 +1,50 @@
+# Logs
+logs
+*.log
+npm-debug.log*
+
+# Runtime data
+pids
+*.pid
+
+# Dependencies
+node_modules/
+dist/
+dist-ssr/
+
+# Environment variables — NEVER commit these!
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+# Editor
+.vscode/
+.idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Firebase
+.firebase/
+firebase-debug.log
+firebase-debug.*.log
+firestore-debug.log
+ui-debug.log
+*.log
+# Local emulator data and local-only secret files. Never commit these.
+.firebaserc.local
+functions/.secret.local
+functions/*.secret.local*
+functions/.env.demo-test.local
+emulator-data/
+*.env.local
+.env.local
+

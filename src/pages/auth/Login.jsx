@@ -20,6 +20,7 @@ import { useAuthStore } from '../../store/authStore';
 
 import toast from 'react-hot-toast';
 // Tenant Branding Configurations
+//Login Page supports multiple tenant branding based on URL parameters or theme context. Each tenant can have its own logo, colors, and welcome messages.
 
 const TENANT_BRANDING = {
 

@@ -1,2 +1,0 @@
-import{D as e}from"./index-DSx5l3Co.js";var t=(t,n,r)=>{if(!n||!n.length){e.error(`No data available to export`);return}let i=r.map(e=>e.label||e.key),a=r.map(e=>e.key),o=[i.join(`,`),...n.map(e=>a.map(t=>{let n=e[t];return n??=``,n=String(n).replace(/"/g,`""`),`"${n}"`}).join(`,`))].join(`
-`),s=new Blob([o],{type:`text/csv;charset=utf-8;`}),c=URL.createObjectURL(s),l=document.createElement(`a`);l.setAttribute(`href`,c),l.setAttribute(`download`,`${t}_${new Date().toISOString().slice(0,10)}.csv`),document.body.appendChild(l),l.click(),document.body.removeChild(l)};export{t};

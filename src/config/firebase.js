@@ -42,6 +42,10 @@ export const shouldUseFirebaseEmulators = (envState = env, runtimeWindow = typeo
     return false;
   }
 
+  if (typeof import.meta !== 'undefined' && import.meta.env && import.meta.env.DEV !== true) {
+    return false;
+  }
+
   if (!runtimeWindow || !runtimeWindow.location) {
     return false;
   }
