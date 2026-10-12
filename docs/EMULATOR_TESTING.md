@@ -57,6 +57,18 @@
 # records for authorized local testing; it does not touch the production
 # project.
 #
+# Authentication profiles are stored at users/{Firebase UID}. The createErpUser
+# callable creates both the Firebase Auth user and its ERP profile; client code
+# cannot create user profiles or change their roles directly. To test account
+# provisioning, use a seeded admin/subadmin account with a matching tenant.
+#
+# Production rollout must deploy both the callable and the profile rules:
+#   firebase deploy --only functions,firestore:rules --project cafe-265bd
+#
+# Bootstrap the first superadmin from Firebase Console/Admin SDK, creating the
+# Auth user first and then users/{that UID} with role=superadmin. The browser
+# /setup route is intentionally disabled.
+#
 # ---------------------------------------------------------------------------
 # 5. Start the React frontend
 # ---------------------------------------------------------------------------
@@ -115,4 +127,3 @@
 #   firebase functions:secrets:set RAZORPAY_KEY_SECRET
 #   firebase deploy --only functions
 # The above is optional and is not part of local testing.
-

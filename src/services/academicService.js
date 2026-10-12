@@ -70,18 +70,14 @@ export const getSubjectsByClass = async (tenantId, classId) => {
 export const createTeacher = async ({ tenantId, branchId, name, email, phone, password, subject, qualification }) => {
   const { user, profile } = await createUserAccount({
     email,
-    password: password || 'Teacher@123',
+    password,
     name,
     role: 'teacher',
     tenantId,
     branchId,
     phone,
-  });
-
-  await updateDoc(doc(db, 'users', user.uid), {
-    subject: subject || '',
-    qualification: qualification || '',
-    updatedAt: serverTimestamp(),
+    subject,
+    qualification,
   });
 
   return { uid: user.uid, profile };
@@ -120,7 +116,6 @@ export const admitStudent = async ({
     try {
       const parentAcc = await createUserAccount({
         email: parentEmail,
-        password: 'Parent@123',
         name: parentName || 'Parent',
         role: 'parent',
         tenantId,
@@ -128,14 +123,16 @@ export const admitStudent = async ({
         phone: parentPhone,
       });
       parentUid = parentAcc.user.uid;
-    } catch {
-      // Parent exists
+    } catch (error) {
+      if (error.code !== 'functions/already-exists') {
+        throw error;
+      }
+      console.warn('Parent account already exists and was not linked automatically.');
     }
   }
 
   const studentAcc = await createUserAccount({
     email: email || `student_${Date.now()}@eduerp.com`,
-    password: 'Student@123',
     name,
     role: 'student',
     tenantId,

@@ -5,13 +5,11 @@ import { Plus, Eye, Palette, Layers, Download, LogIn, AlertTriangle, Power, Glob
 import DataTable from '../../components/common/DataTable';
 import ConfirmDialog from '../../components/common/ConfirmDialog';
 import { exportToCSV } from '../../services/exportService';
-import { useAuthStore } from '../../store/authStore';
 import { getColleges, deleteCollegeTenant } from '../../services/tenantService';
 import toast from 'react-hot-toast';
 
 const Colleges = () => {
   const navigate = useNavigate();
-  const { setUserProfile, setRole, setTenantId } = useAuthStore();
   const [colleges, setColleges] = useState([]);
   const [loading, setLoading] = useState(true);
   const [selectedPlanFilter, setSelectedPlanFilter] = useState('All');
@@ -46,27 +44,8 @@ const Colleges = () => {
     fetchRealTenants();
   }, []);
 
-  const handleImpersonate = (college) => {
-    const impersonatedUser = {
-      uid: `impersonated_admin_${college.id}`,
-      email: college.email || 'admin@college.edu',
-      displayName: `Admin (${college.name})`,
-    };
-    const impersonatedProfile = {
-      uid: `impersonated_admin_${college.id}`,
-      name: `Admin (${college.name})`,
-      email: college.email || 'admin@college.edu',
-      role: 'admin',
-      tenantId: college.id,
-      schoolName: college.name,
-      isImpersonating: true,
-    };
-    useAuthStore.getState().setUser(impersonatedUser);
-    useAuthStore.getState().setUserProfile(impersonatedProfile);
-    useAuthStore.getState().setRole('admin');
-    useAuthStore.getState().setTenantId(college.id);
-    toast.success(`🔐 Impersonating ${college.name} Admin! Navigating to Admin Dashboard...`);
-    navigate('/admin');
+  const handleOpenTenantLogin = (college) => {
+    navigate(`/login?tenant=${encodeURIComponent(college.id)}`);
   };
 
   const handleConfirmSuspend = async () => {
@@ -117,8 +96,8 @@ const Colleges = () => {
           <button className="btn btn-secondary btn-sm" title="Configure Feature Modules" onClick={() => navigate('/superadmin/modules')}>
             <Layers size={14} /> Modules
           </button>
-          <button className="btn btn-primary btn-sm" title="Impersonate College Admin" onClick={() => handleImpersonate(row)}>
-            <LogIn size={14} /> Impersonate
+          <button className="btn btn-primary btn-sm" title="Open tenant login" onClick={() => handleOpenTenantLogin(row)}>
+            <LogIn size={14} /> Tenant Login
           </button>
           {row.status !== 'Suspended' && (
             <button className="btn btn-danger btn-sm" title="Suspend Tenant Access" onClick={() => setSuspendTarget(row)}>
@@ -189,4 +168,3 @@ const Colleges = () => {
 };
 
 export default Colleges;
-

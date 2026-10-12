@@ -1,28 +1,59 @@
 // src/services/groqService.js
+//
+// ╔══════════════════════════════════════════════════════════════════╗
+// ║  AI SERVICE — MOCK / TEMPLATE IMPLEMENTATION                    ║
+// ║                                                                  ║
+// ║  All five functions below use deterministic template/rule        ║
+// ║  logic. They are NOT calling any real AI API.                   ║
+// ║                                                                  ║
+// ║  SECURITY NOTE (Issue #43):                                     ║
+// ║  The previous implementation declared:                          ║
+// ║    const GROQ_API_KEY = import.meta.env.VITE_GROQ_API_KEY       ║
+// ║  Any VITE_* variable is bundled into client JavaScript and is   ║
+// ║  visible to every browser. A Groq (or any LLM) secret key      ║
+// ║  MUST NEVER be placed in a VITE_* variable or any client-side  ║
+// ║  code. That declaration has been removed.                       ║
+// ║                                                                  ║
+// ║  TO ENABLE REAL AI:                                             ║
+// ║  Real AI API calls require a server-side boundary. Options:    ║
+// ║   • A Firebase Cloud Function (e.g., functions/aiProxy.js)     ║
+// ║     that holds the Groq/OpenAI secret via Secret Manager and   ║
+// ║     exposes a secure callable for the frontend.                ║
+// ║   • A dedicated backend API endpoint (/api/ai/...) that the    ║
+// ║     frontend calls with a session credential (not a raw key).  ║
+// ║  Until that backend is deployed, these mock functions provide  ║
+// ║  stable UI behavior without any API dependency.                ║
+// ╚══════════════════════════════════════════════════════════════════╝
+//
+// NOTE: No AI API key is declared here. Secret credentials must
+// live server-side only (Firebase Secret Manager or equivalent).
+//
+// Client-side portion fixed; real AI integration requires server-side implementation.
 
 /**
- * Groq AI Service Helper
- * Provides AI assistance for drafting SMS/notice announcements, detecting attendance anomalies,
- * scoring fee default risks, auto-summarizing report card comments, and answering parent FAQs.
- */
-
-const GROQ_API_KEY = import.meta.env.VITE_GROQ_API_KEY || 'gsk_mock_key_iitiancraft_school_erp_ai';
-
-/**
- * 1. AI Auto-Draft Notice / SMS Announcement
+ * 1. [MOCK] AI Auto-Draft Notice / SMS Announcement
+ *
+ * Returns a deterministic template response.
+ * Real implementation: call a server-side AI proxy (Cloud Function or backend
+ * endpoint) that uses the Groq/OpenAI API with a secret key held in
+ * Firebase Secret Manager — never exposed to the browser.
  */
 export const aiDraftNoticeContent = async ({ promptTopic, targetAudience = 'Parents', tone = 'Professional & Formal' }) => {
   try {
-    // Simulated Groq LLM completion with fallback response
+    // [MOCK] Deterministic template — not a real LLM completion.
     return `OFFICIAL NOTICE: ${promptTopic.toUpperCase()}\n\nDear ${targetAudience},\n\nWe would like to inform you regarding ${promptTopic.toLowerCase()}. Please ensure all necessary arrangements are completed by the due date. For further details, please log in to the ERP Portal.\n\nRegards,\nSchool Administration`;
   } catch (err) {
-    console.warn('Groq AI draft error:', err);
+    console.warn('AI draft error (mock):', err);
     return `Official Notice: ${promptTopic}. Please check ERP portal for details.`;
   }
 };
 
 /**
- * 2. AI Attendance Anomaly Detection
+ * 2. [MOCK] AI Attendance Anomaly Detection
+ *
+ * Uses a simple threshold rule (consecutiveAbsences >= 3).
+ * Real implementation: send aggregated records to a server-side AI proxy
+ * for pattern analysis and risk prediction.
  */
 export const aiDetectAttendanceAnomalies = (attendanceRecords = []) => {
   const anomalies = [];
@@ -42,7 +73,11 @@ export const aiDetectAttendanceAnomalies = (attendanceRecords = []) => {
 };
 
 /**
- * 3. AI Fee Default Risk Scoring
+ * 3. [MOCK] AI Fee Default Risk Scoring
+ *
+ * Uses a hardcoded scoring rubric. Not a trained model.
+ * Real implementation: send the student financial profile to a server-side
+ * model endpoint that returns a calibrated, ML-backed risk score.
  */
 export const aiComputeFeeDefaultRiskScore = (student) => {
   let score = 0;
@@ -59,7 +94,11 @@ export const aiComputeFeeDefaultRiskScore = (student) => {
 };
 
 /**
- * 4. AI Auto-Summarize Report Card Comments
+ * 4. [MOCK] AI Auto-Summarize Report Card Comments
+ *
+ * Returns a canned comment based on score thresholds.
+ * Real implementation: call a server-side language model proxy with the
+ * full academic record to generate a personalised narrative summary.
  */
 export const aiSummarizeTeacherRemarks = ({ studentName, mathScore, physicsScore, englishScore, attendancePct }) => {
   if (mathScore >= 90 && physicsScore >= 90) {
@@ -72,7 +111,11 @@ export const aiSummarizeTeacherRemarks = ({ studentName, mathScore, physicsScore
 };
 
 /**
- * 5. AI Parent FAQ Chatbot Response Generator
+ * 5. [MOCK] AI Parent FAQ Chatbot Response Generator
+ *
+ * Uses keyword matching. Not a real NLU / LLM pipeline.
+ * Real implementation: call a server-side AI proxy with the user query;
+ * the backend holds the API key and returns a model-generated answer.
  */
 export const aiGenerateParentFAQAnswer = (userQuery) => {
   const q = userQuery.toLowerCase();

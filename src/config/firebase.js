@@ -8,14 +8,14 @@ import { getStorage } from 'firebase/storage';
 const env = (typeof import.meta !== 'undefined' && import.meta.env) ? import.meta.env : (typeof process !== 'undefined' && process.env) ? process.env : {};
 
 const firebaseConfig = {
-  apiKey: env.VITE_FIREBASE_API_KEY || 'AIzaSyDemoDummyKeyForTestEnv9901',
-  authDomain: env.VITE_FIREBASE_AUTH_DOMAIN || 'demo-school-erp.firebaseapp.com',
-  databaseURL: env.VITE_FIREBASE_DATABASE_URL || 'https://demo-school-erp.firebaseio.com',
-  projectId: env.VITE_FIREBASE_PROJECT_ID || 'demo-school-erp',
-  storageBucket: env.VITE_FIREBASE_STORAGE_BUCKET || 'demo-school-erp.appspot.com',
-  messagingSenderId: env.VITE_FIREBASE_MESSAGING_SENDER_ID || '1234567890',
-  appId: env.VITE_FIREBASE_APP_ID || '1:1234567890:web:abcdef123456',
-  measurementId: env.VITE_FIREBASE_MEASUREMENT_ID || 'G-DEMO12345',
+  apiKey: env.VITE_FIREBASE_API_KEY || 'AIzaSyAinTROq8ttJWVhQdxR6pf_cSik13dXuMs',
+  authDomain: env.VITE_FIREBASE_AUTH_DOMAIN || 'cafe-265bd.firebaseapp.com',
+  databaseURL: env.VITE_FIREBASE_DATABASE_URL || 'https://cafe-265bd-default-rtdb.firebaseio.com',
+  projectId: env.VITE_FIREBASE_PROJECT_ID || 'cafe-265bd',
+  storageBucket: env.VITE_FIREBASE_STORAGE_BUCKET || 'cafe-265bd.firebasestorage.app',
+  messagingSenderId: env.VITE_FIREBASE_MESSAGING_SENDER_ID || '396904698649',
+  appId: env.VITE_FIREBASE_APP_ID || '1:396904698649:web:dacc483343354438e5ab88',
+  measurementId: env.VITE_FIREBASE_MEASUREMENT_ID,
 };
 
 // Singleton guard — prevents "duplicate-app" error during HMR

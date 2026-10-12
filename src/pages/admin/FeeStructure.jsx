@@ -318,6 +318,11 @@ const FeeStructure = () => {
       return;
     }
 
+    if (!collectMethod || collectMethod.trim() === '') {
+      toast.error('Please select a valid payment method before recording the fee.');
+      return;
+    }
+
     // Offline Flow (Cash / Cheque / Bank Transfer)
     let generatedTxnId = `COUNTER_${Date.now().toString().slice(-6)}`;
     if (collectMethod.includes('Cheque')) {
@@ -332,7 +337,7 @@ const FeeStructure = () => {
       rollNo: selectedFee.rollNo,
       className: selectedFee.className,
       feeHead: selectedFee.feeHead,
-      amountPaid: (Number(selectedFee.amountPaid) || 0) + numCollect,
+      amountCollected: numCollect, // Send delta instead of pre-calculated total for concurrency safety
       totalDue: selectedFee.totalDue,
       paymentMethod: collectMethod,
       txnId: generatedTxnId,

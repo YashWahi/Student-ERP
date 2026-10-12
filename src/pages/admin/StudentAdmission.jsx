@@ -12,6 +12,7 @@ import {
 import { useStudentStore } from '../../store/studentStore';
 import { useCrmStore } from '../../store/crmStore';
 import { useAuthStore } from '../../store/authStore';
+import { createUserAccount } from '../../services/authService';
 import toast from 'react-hot-toast';
 
 const admissionSchema = z.object({
@@ -21,8 +22,9 @@ const admissionSchema = z.object({
   gender: z.enum(['Male', 'Female', 'Other']),
   category: z.enum(['GEN', 'OBC', 'SC', 'ST']),
   bloodGroup: z.string().optional(),
-  studentEmail: z.string().email('Invalid email format').optional().or(z.literal('')),
+  studentEmail: z.string().email('A valid student email is required'),
   studentPhone: z.string().optional(),
+  password: z.string().optional(),
 
   // Step 2: Parent Info
   parentName: z.string().min(2, 'Parent full name is required'),
@@ -63,12 +65,13 @@ const StudentAdmission = () => {
   const { updateLeadStage } = useCrmStore();
   const { userProfile, tenantId: storeTenantId } = useAuthStore();
   const activeTenantId = userProfile?.tenantId || storeTenantId || 'tenant_gvis';
+  const activeBranchId = userProfile?.branchId || null;
 
   const [step, setStep] = useState(1);
   const [parentMatch, setParentMatch] = useState(null);
   const [isUniqueAdmNo, setIsUniqueAdmNo] = useState(true);
   const [submitting, setSubmitting] = useState(false);
-  const [createdReceipt, setCreatedReceipt] = useState(null);
+  const [createdReceipt, setCreatedReceipt] = useState(null); // Deprecated: Receipts should only be generated securely by the backend
 
   // Initialize auto admission number
   const defaultAdmNo = `ADM-2026-${Math.floor(100 + Math.random() * 900)}`;
@@ -171,14 +174,22 @@ const StudentAdmission = () => {
   const handleFinalSubmit = async (data) => {
     setSubmitting(true);
     try {
-      const receiptNo = `REC-2026-${Math.floor(1000 + Math.random() * 9000)}`;
+      const account = await createUserAccount({
+        email: data.studentEmail.trim().toLowerCase(),
+        password: data.password || undefined,
+        name: data.studentName.trim(),
+        role: 'student',
+        tenantId: activeTenantId,
+        branchId: activeBranchId,
+        phone: data.studentPhone || data.parentPhone,
+      });
 
-      // Save Student to store
-      const newStudent = addStudent({
+      // Save Student to store. Payment must be verified securely via the backend/Razorpay gateway.
+      addStudent({
+        uid: account.user.uid,
         tenantId: activeTenantId,
         name: data.studentName,
         studentEmail: data.studentEmail,
-        password: data.password || 'student123',
         rollNo: data.rollNo,
         admissionNo: data.admissionNo,
         className: data.className,
@@ -190,13 +201,13 @@ const StudentAdmission = () => {
         bloodGroup: data.bloodGroup,
         dob: data.dob,
         address: data.address,
-        feeStatus: 'Paid',
+        feeStatus: 'Pending', // Security Fix: Payment status cannot be blindly trusted from client
         status: 'Active',
-        feeReceipt: {
-          receiptNo,
-          totalPaid: netPayable,
-          paymentMode: data.paymentMode,
-          paymentRef: data.paymentRef,
+        // Security Fix: Do not generate authoritative receipt numbers in browser
+        initialFeeDetails: {
+          totalPayable: netPayable,
+          declaredPaymentMode: data.paymentMode,
+          declaredPaymentRef: data.paymentRef,
           date: new Date().toISOString().split('T')[0]
         }
       });
@@ -206,17 +217,7 @@ const StudentAdmission = () => {
         updateLeadStage(leadId, 'Admitted');
       }
 
-      setCreatedReceipt({
-        receiptNo,
-        studentName: data.studentName,
-        className: data.className,
-        admissionNo: data.admissionNo,
-        amount: netPayable,
-        paymentMode: data.paymentMode,
-        paymentRef: data.paymentRef,
-        parentName: data.parentName,
-        date: new Date().toISOString().split('T')[0]
-      });
+      setCreatedReceipt(null);
 
       toast.success(`🎉 Admission Completed! Student "${data.studentName}" admitted to ${data.className}!`);
       setTimeout(() => {
@@ -317,13 +318,14 @@ const StudentAdmission = () => {
 
                     <div className="form-group">
                       <label className="form-label">Student Login Email ID *</label>
-                      <input type="email" className="form-input" placeholder="e.g. student@gmail.com" {...register('studentEmail')} />
+                      <input type="email" className="form-input" placeholder="e.g. student@gmail.com" required {...register('studentEmail')} />
                       {errors.studentEmail && <span style={{ color: '#DC2626', fontSize: '0.75rem', marginTop: 4 }}>{errors.studentEmail.message}</span>}
                     </div>
 
                     <div className="form-group">
-                      <label className="form-label">Student Login Password *</label>
-                      <input type="text" className="form-input" placeholder="e.g. student123" defaultValue="student123" {...register('password')} />
+                      <label className="form-label">Initial Password (Optional)</label>
+                      <input type="password" className="form-input" autoComplete="new-password" {...register('password')} />
+                      <small style={{ color: '#64748B' }}>If empty, a random password is generated. The student can use Forgot Password to set their own.</small>
                     </div>
                   </div>
                 </div>
@@ -528,19 +530,12 @@ const StudentAdmission = () => {
                     </div>
                   </div>
 
-                  {createdReceipt && (
-                    <div style={{ padding: 16, backgroundColor: '#EFF6FF', border: '1px solid #BFDBFE', borderRadius: 8, marginBottom: 20 }}>
-                      <div className="flex justify-between items-center">
-                        <div>
-                          <strong style={{ color: '#1D4ED8' }}>Receipt Generated: #{createdReceipt.receiptNo}</strong>
-                          <div style={{ fontSize: '0.78rem', color: '#3B82F6' }}>Amount ₹{createdReceipt.amount} paid via {createdReceipt.paymentMode}</div>
-                        </div>
-                        <button type="button" className="btn btn-secondary btn-sm" onClick={() => window.print()}>
-                          <Printer size={14} /> Print Receipt
-                        </button>
-                      </div>
+                  {/* Security Fix: Removed fake receipt generation UI */}
+                  <div style={{ textAlign: 'center', marginTop: 12, marginBottom: 20 }}>
+                    <div style={{ fontSize: '0.85rem', color: '#64748B' }}>
+                      Admission recorded. Payment verification and official receipt generation must be completed securely via the Fee Management portal.
                     </div>
-                  )}
+                  </div>
                 </div>
               )}
             </motion.div>

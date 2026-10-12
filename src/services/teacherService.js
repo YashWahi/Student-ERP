@@ -36,25 +36,11 @@ export const markClassAttendance = async (attendanceData) => {
   };
 
   try {
-    const existing = JSON.parse(localStorage.getItem(`attendance_${tenantId}_${classId}`) || '[]');
-    const filtered = existing.filter(a => a.date !== date);
-    filtered.unshift(payload);
-    localStorage.setItem(`attendance_${tenantId}_${classId}`, JSON.stringify(filtered));
-
-    const cleanClass = classId.replace('Class ', '').trim();
-    const existingClean = JSON.parse(localStorage.getItem(`attendance_${tenantId}_${cleanClass}`) || '[]');
-    const filteredClean = existingClean.filter(a => a.date !== date);
-    filteredClean.unshift(payload);
-    localStorage.setItem(`attendance_${tenantId}_${cleanClass}`, JSON.stringify(filteredClean));
-  } catch (e) {
-    console.warn('LocalStorage attendance save error:', e);
-  }
-
-  try {
     const attRef = doc(db, 'attendance', docId);
-    setDoc(attRef, payload, { merge: true }).catch(e => console.warn('Firestore setDoc attendance non-blocking:', e.message));
+    await setDoc(attRef, payload, { merge: true });
   } catch (err) {
-    console.warn('Firestore markClassAttendance fallback:', err.message);
+    console.error('Firestore markClassAttendance failed:', err);
+    throw new Error('Failed to save attendance to the database.');
   }
 
   await logAuditEvent({

@@ -2,6 +2,14 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 
+try {
+  if (typeof window !== 'undefined') {
+    window.localStorage.removeItem('custom_users');
+  }
+} catch (error) {
+  console.error('Unable to clear legacy local user records:', error);
+}
+
 export const useAuthStore = create(
   persist(
     (set) => ({
@@ -46,15 +54,22 @@ export const useAuthStore = create(
     }),
     {
       name: 'auth-storage',
-      partialize: (state) => ({
-        user: state.user,
-        userProfile: state.userProfile,
-        role: state.role,
-        tenantId: state.tenantId,
-        branchId: state.branchId,
-        academicSession: state.academicSession,
+      version: 1,
+      partialize: (state) => ({ academicSession: state.academicSession }),
+      migrate: (persistedState) => ({
+        academicSession: persistedState?.academicSession || '2026-27',
       }),
+      merge: (persistedState, currentState) => ({
+        ...currentState,
+        academicSession: persistedState?.academicSession || currentState.academicSession,
+      }),
+      onRehydrateStorage: () => (state, error) => {
+        if (error) {
+          console.error('Unable to restore ERP preferences:', error);
+          return;
+        }
+        state?.setAcademicSession(state.academicSession);
+      },
     }
   )
 );
-

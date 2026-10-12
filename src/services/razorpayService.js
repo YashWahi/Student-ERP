@@ -12,7 +12,7 @@
 // - No client-side "verified: true" — only the backend verdict marks Paid.
 // - Firestore writes happen server-side in verifyRazorpayPayment; the frontend
 //   only generates the PDF receipt + UI updates after backend confirmation.
-
+import toast from 'react-hot-toast';
 import { httpsCallable } from 'firebase/functions';
 import { functions } from '../config/firebase';
 import { FALLBACK_RAZORPAY_KEY_ID, RAZORPAY_FUNCTIONS } from '../config/payments';
@@ -192,8 +192,11 @@ const openVerifiedCheckout = async ({
         });
 
         // Firestore is already updated server-side; generate the PDF receipt.
+        // IMPORTANT: generateFeeReceiptPDF is async (awaits QR code rendering).
+        // It MUST be awaited so that failures are caught and the receipt is not
+        // silently lost. onSuccess is only called after the PDF attempt settles.
         try {
-          generateFeeReceiptPDF({
+          await generateFeeReceiptPDF({
             receiptNo: verified.txnId,
             studentName: receiptMeta.studentName,
             rollNo: receiptMeta.rollNo,
@@ -203,7 +206,11 @@ const openVerifiedCheckout = async ({
             paymentMethod: 'Online (Razorpay)',
           });
         } catch (pdfErr) {
+          // Receipt generation failure must NOT prevent the success callback —
+          // payment is already verified server-side — but it must be surfaced so
+          // the user is not left without a receipt without any indication.
           console.warn('Receipt PDF generation failed:', pdfErr?.message || pdfErr);
+          toast.error('Payment recorded, but the receipt PDF could not be generated. Please contact support.');
         }
 
         onSuccess && onSuccess({
@@ -262,7 +269,7 @@ export const initiateFeePayout = async ({
 }) => {
   const loaded = await loadRazorpayScript();
   if (!loaded) {
-    alert('Razorpay SDK failed to load. Please check your internet connection.');
+    toast.error('Razorpay SDK failed to load. Please check your internet connection.');
     onFailure && onFailure(new Error('SDK load failed'));
     return;
   }
@@ -329,7 +336,7 @@ export const initiatePlatformSubscriptionCheckout = async ({
 }) => {
   const loaded = await loadRazorpayScript();
   if (!loaded) {
-    alert('Razorpay SDK failed to load.');
+    toast.error('Razorpay SDK failed to load.');
     onFailure && onFailure(new Error('SDK load failed'));
     return;
   }

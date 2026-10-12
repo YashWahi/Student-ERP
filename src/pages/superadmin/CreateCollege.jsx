@@ -595,7 +595,7 @@ const CreateCollege = () => {
                   onChange={(e) => setFormData({ ...formData, adminPassword: e.target.value })}
                 />
                 <div style={{ fontSize: '0.75rem', color: '#64748B', marginTop: 4 }}>
-                  Default if empty: <code>EduERP@2026</code> (Admin will be prompted to reset upon first login)
+                  Leave empty to generate a random password. The administrator can use Forgot Password to set their password.
                 </div>
               </div>
             </div>

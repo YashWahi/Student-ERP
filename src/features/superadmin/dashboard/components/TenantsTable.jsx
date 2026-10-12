@@ -21,7 +21,7 @@ const TenantsTable = ({
   pageSize = 5,
   onExportCSV,
   onViewTenant,
-  onImpersonate,
+  onTenantLogin,
 }) => {
   const navigate = useNavigate();
 
@@ -330,8 +330,8 @@ const TenantsTable = ({
                       <button
                         type="button"
                         className="btn btn-ghost btn-sm btn-icon"
-                        onClick={() => onImpersonate && onImpersonate(c)}
-                        title="Securely Login as Tenant Admin"
+                        onClick={() => onTenantLogin && onTenantLogin(c)}
+                        title="Open tenant login"
                         style={{ height: 28, width: 28, color: '#2563EB' }}
                       >
                         <LogIn size={14} />

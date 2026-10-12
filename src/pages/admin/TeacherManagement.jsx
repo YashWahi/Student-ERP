@@ -5,26 +5,31 @@ import DataTable from '../../components/common/DataTable';
 import Modal from '../../components/common/Modal';
 import StatCard from '../../components/common/StatCard';
 import toast from 'react-hot-toast';
-
 import { useAuthStore } from '../../store/authStore';
+import { createUserAccount } from '../../services/authService';
 
 const MOCK_TEACHERS = [
-  { id: 't_101', empId: 'FAC-101', name: 'Mrs. Priya Sharma', dept: 'Mathematics', qualification: 'M.Sc. Mathematics, B.Ed', subjects: ['Mathematics', 'Statistics'], assignedClass: 'Class 10-A', phone: '+91 98765 43210', email: 'priya.sharma@greenvalley.edu', password: 'password123', status: 'Active' },
-  { id: 't_102', empId: 'FAC-102', name: 'Mr. Rajesh Verma', dept: 'Science (Physics)', qualification: 'Ph.D. Physics', subjects: ['Physics', 'Science'], assignedClass: 'Class 10-B', phone: '+91 98765 43211', email: 'rajesh.verma@greenvalley.edu', password: 'password123', status: 'Active' },
-  { id: 't_103', empId: 'FAC-103', name: 'Ms. Anjali Roy', dept: 'English & Literature', qualification: 'M.A. English, B.Ed', subjects: ['English Literature', 'Grammar'], assignedClass: 'Class 9-A', phone: '+91 98765 43212', email: 'anjali.roy@greenvalley.edu', password: 'password123', status: 'Active' },
-  { id: 't_104', empId: 'FAC-104', name: 'Dr. Meena Iyer', dept: 'Chemistry', qualification: 'Ph.D. Chemistry', subjects: ['Chemistry'], assignedClass: 'Class 11-A', phone: '+91 98765 43213', email: 'meena.iyer@greenvalley.edu', password: 'password123', status: 'Active' },
-  { id: 't_105', empId: 'FAC-105', name: 'Mr. Alok Singh', dept: 'Computer Science', qualification: 'M.Tech CSE', subjects: ['Computer Science', 'Python'], assignedClass: 'Class 8-A', phone: '+91 98765 43214', email: 'alok.singh@greenvalley.edu', password: 'password123', status: 'Active' },
+  { id: 't_101', empId: 'FAC-101', name: 'Mrs. Priya Sharma', dept: 'Mathematics', qualification: 'M.Sc. Mathematics, B.Ed', subjects: ['Mathematics', 'Statistics'], assignedClass: 'Class 10-A', phone: '+91 98765 43210', email: 'priya.sharma@greenvalley.edu', status: 'Active' },
+  { id: 't_102', empId: 'FAC-102', name: 'Mr. Rajesh Verma', dept: 'Science (Physics)', qualification: 'Ph.D. Physics', subjects: ['Physics', 'Science'], assignedClass: 'Class 10-B', phone: '+91 98765 43211', email: 'rajesh.verma@greenvalley.edu', status: 'Active' },
+  { id: 't_103', empId: 'FAC-103', name: 'Ms. Anjali Roy', dept: 'English & Literature', qualification: 'M.A. English, B.Ed', subjects: ['English Literature', 'Grammar'], assignedClass: 'Class 9-A', phone: '+91 98765 43212', email: 'anjali.roy@greenvalley.edu', status: 'Active' },
+  { id: 't_104', empId: 'FAC-104', name: 'Dr. Meena Iyer', dept: 'Chemistry', qualification: 'Ph.D. Chemistry', subjects: ['Chemistry'], assignedClass: 'Class 11-A', phone: '+91 98765 43213', email: 'meena.iyer@greenvalley.edu', status: 'Active' },
+  { id: 't_105', empId: 'FAC-105', name: 'Mr. Alok Singh', dept: 'Computer Science', qualification: 'M.Tech CSE', subjects: ['Computer Science', 'Python'], assignedClass: 'Class 8-A', phone: '+91 98765 43214', email: 'alok.singh@greenvalley.edu', status: 'Active' },
 ];
 
 const TeacherManagement = () => {
   const { userProfile, tenantId: activeTenantId } = useAuthStore();
   const currentTenant = userProfile?.tenantId || activeTenantId || 'tenant_gvis';
+  const currentBranchId = userProfile?.branchId || null;
   const isCustomCollege = currentTenant && currentTenant !== 'tenant_gvis';
 
   const [teachers, setTeachers] = useState(() => {
     try {
       const saved = localStorage.getItem(`teacher_roster_${currentTenant}`);
-      if (saved) return JSON.parse(saved);
+      if (saved) {
+        const roster = JSON.parse(saved).map(({ password, ...teacher }) => teacher);
+        localStorage.setItem(`teacher_roster_${currentTenant}`, JSON.stringify(roster));
+        return roster;
+      }
     } catch (e) {
       console.warn('Teacher roster load error:', e);
     }
@@ -42,70 +47,64 @@ const TeacherManagement = () => {
   const [assignedClass, setAssignedClass] = useState('Class 10-A');
   const [phone, setPhone] = useState('');
   const [email, setEmail] = useState('');
-  const [password, setPassword] = useState('teacher123');
+  const [password, setPassword] = useState('');
 
   const updateTeachersState = (newList) => {
-    setTeachers(newList);
+    const safeList = newList.map(({ password: _password, ...teacher }) => teacher);
+    setTeachers(safeList);
     try {
-      localStorage.setItem(`teacher_roster_${currentTenant}`, JSON.stringify(newList));
+      localStorage.setItem(`teacher_roster_${currentTenant}`, JSON.stringify(safeList));
     } catch (e) {
       console.warn('Teacher roster save error:', e);
     }
   };
 
-  const handleAddTeacher = (e) => {
+  const handleAddTeacher = async (e) => {
     e.preventDefault();
-    if (!name) return;
-    const tEmail = (email || `${name.toLowerCase().replace(/\s+/g, '.')}@${currentTenant.toLowerCase()}.edu`).toLowerCase();
-    const tPassword = password || 'teacher123';
-
-    const newTeacher = {
-      id: `t_${Date.now()}`,
-      empId: `FAC-${Math.floor(100 + Math.random() * 900)}`,
-      tenantId: currentTenant,
-      name,
-      dept,
-      qualification,
-      subjects: [dept],
-      assignedClass,
-      phone: phone || '+91 98765 00000',
-      email: tEmail,
-      password: tPassword,
-      status: 'Active',
-    };
-
-    const updatedList = [newTeacher, ...teachers];
-    updateTeachersState(updatedList);
-
-    // Save to custom_users so teacher can log in immediately
+    if (!name.trim() || !email.trim()) {
+      toast.error('Name and email are required.');
+      return;
+    }
     try {
-      const customUsers = JSON.parse(localStorage.getItem('custom_users') || '[]');
-      customUsers.unshift({
-        uid: newTeacher.id,
-        email: tEmail,
-        password: tPassword,
-        name: name,
+      const account = await createUserAccount({
+        email: email.trim().toLowerCase(),
+        password: password || undefined,
+        name: name.trim(),
         role: 'teacher',
         tenantId: currentTenant,
-        branchId: 'branch_main',
-        status: 'Active',
-        schoolName: 'Teacher Workspace'
+        branchId: currentBranchId,
+        phone,
+        subject: dept,
+        qualification,
       });
-      localStorage.setItem('custom_users', JSON.stringify(customUsers));
-    } catch (e) {
-      console.warn('LocalStorage custom_users save error:', e);
-    }
 
-    toast.success(`👩‍🏫 ${name} added to Faculty Directory! Login: ${tEmail}`);
-    setShowAddModal(false);
-    resetForm();
+      const newTeacher = {
+        id: account.user.uid,
+        empId: `FAC-${Math.floor(100 + Math.random() * 900)}`,
+        tenantId: currentTenant,
+        name: name.trim(),
+        dept,
+        qualification,
+        subjects: [dept],
+        assignedClass,
+        phone,
+        email: account.profile.email,
+        status: 'Active',
+      };
+      updateTeachersState([newTeacher, ...teachers]);
+      toast.success(`${newTeacher.name} added. Use Forgot Password if no password was provided.`);
+      setShowAddModal(false);
+      resetForm();
+    } catch (error) {
+      console.error('Unable to provision teacher account:', error);
+      toast.error(error.message || 'Unable to provision teacher account.');
+    }
   };
 
   const handleUpdateTeacher = (e) => {
     e.preventDefault();
     if (!selectedTeacher) return;
     const tEmail = (email || selectedTeacher.email).toLowerCase();
-    const tPassword = password || selectedTeacher.password || 'teacher123';
 
     const updatedList = teachers.map(t => t.id === selectedTeacher.id ? {
       ...t,
@@ -115,7 +114,6 @@ const TeacherManagement = () => {
       assignedClass,
       phone,
       email: tEmail,
-      password: tPassword,
     } : t);
 
     updateTeachersState(updatedList);
@@ -127,7 +125,7 @@ const TeacherManagement = () => {
 
   const resetForm = () => {
     setName(''); setDept('Mathematics'); setQualification('M.Sc., B.Ed');
-    setAssignedClass('Class 10-A'); setPhone(''); setEmail(''); setPassword('teacher123');
+    setAssignedClass('Class 10-A'); setPhone(''); setEmail(''); setPassword('');
   };
 
   const handleOpenEdit = (t) => {
@@ -138,7 +136,7 @@ const TeacherManagement = () => {
     setAssignedClass(t.assignedClass);
     setPhone(t.phone);
     setEmail(t.email || '');
-    setPassword(t.password || 'teacher123');
+    setPassword('');
     setShowEditModal(true);
   };
 
@@ -254,10 +252,13 @@ const TeacherManagement = () => {
               <input className="form-input" type="email" required value={email} onChange={e => setEmail(e.target.value)} placeholder="e.g. teacher@school.edu" />
             </div>
             <div>
-              <label className="form-label">Login Password *</label>
-              <input className="form-input" type="text" required value={password} onChange={e => setPassword(e.target.value)} placeholder="e.g. teacher123" />
+              <label className="form-label">Initial Password (Optional)</label>
+              <input className="form-input" type="password" autoComplete="new-password" value={password} onChange={e => setPassword(e.target.value)} />
             </div>
           </div>
+          <p style={{ fontSize: '0.75rem', color: '#64748B' }}>
+            If left empty, a random password is generated. The teacher can use Forgot Password to set their own.
+          </p>
           <div className="flex justify-end gap-3 pt-4">
             <button type="button" className="btn btn-secondary" onClick={() => setShowAddModal(false)}>Cancel</button>
             <button type="submit" className="btn btn-primary">Save Faculty Profile</button>
@@ -292,15 +293,9 @@ const TeacherManagement = () => {
               <input className="form-input" value={phone} onChange={e => setPhone(e.target.value)} />
             </div>
           </div>
-          <div className="grid grid-cols-2 gap-4">
-            <div>
-              <label className="form-label">Login Email ID *</label>
-              <input className="form-input" type="email" required value={email} onChange={e => setEmail(e.target.value)} />
-            </div>
-            <div>
-              <label className="form-label">Login Password *</label>
-              <input className="form-input" type="text" required value={password} onChange={e => setPassword(e.target.value)} />
-            </div>
+          <div>
+            <label className="form-label">Contact Email *</label>
+            <input className="form-input" type="email" required value={email} onChange={e => setEmail(e.target.value)} />
           </div>
           <div className="flex justify-end gap-3 pt-4">
             <button type="button" className="btn btn-secondary" onClick={() => setShowEditModal(false)}>Cancel</button>

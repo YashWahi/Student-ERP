@@ -5,7 +5,6 @@ import toast from 'react-hot-toast';
 import { getColleges, getSubscriptions, deleteCollegeTenant, updateCollegeTenant, renewSubscriptionRecord } from '../../../../services/tenantService';
 import { getAuditLogs, logAuditEvent } from '../../../../services/auditService';
 import { exportToCSV } from '../../../../services/exportService';
-import { useAuthStore } from '../../../../store/authStore';
 import { calculateTenantKPIs, calculateSafeTrend } from '../utils/kpiCalculator';
 
 export const TIME_RANGES = ['Today', '7D', '30D', '3M', '6M', '1Y'];
@@ -131,7 +130,6 @@ const DEFAULT_SECURITY_ALERTS = [
 
 export const useSuperAdminDashboard = () => {
   const navigate = useNavigate();
-  const { setUser, setUserProfile } = useAuthStore();
 
   const [loading, setLoading] = useState(true);
   const [tenantsList, setTenantsList] = useState([]);
@@ -443,35 +441,8 @@ export const useSuperAdminDashboard = () => {
     }
   };
 
-  const handleImpersonateAdmin = async (tenant) => {
-    await logAuditEvent({
-      action: 'IMPERSONATE_TENANT_ADMIN',
-      actor: 'Super Admin',
-      target: tenant.name,
-      details: `SuperAdmin initiated secure session impersonation for tenant: ${tenant.id} (${tenant.name})`,
-      tenantId: tenant.id,
-    });
-
-    const impersonatedUser = {
-      uid: `impersonated_admin_${tenant.id}`,
-      email: tenant.email || `admin@${tenant.code.toLowerCase()}.edu`,
-    };
-    const impersonatedProfile = {
-      uid: `impersonated_admin_${tenant.id}`,
-      email: tenant.email || `admin@${tenant.code.toLowerCase()}.edu`,
-      name: `${tenant.name} Admin`,
-      role: 'admin',
-      tenantId: tenant.id,
-      branchId: 'branch_main',
-      schoolName: tenant.name,
-      isImpersonating: true,
-      enabledModules: tenant.enabledModules,
-    };
-
-    setUser(impersonatedUser);
-    setUserProfile(impersonatedProfile);
-    toast.success(`🔐 Logged in as Admin for ${tenant.name}`);
-    navigate('/admin');
+  const handleOpenTenantLogin = (tenant) => {
+    navigate(`/login?tenant=${encodeURIComponent(tenant.id)}`);
   };
 
   const handleExportTenantsCSV = () => {
@@ -564,11 +535,10 @@ export const useSuperAdminDashboard = () => {
     handleResolveAlert,
     handleRenewSubscription,
     handleSuspendTenant,
-    handleImpersonateAdmin,
+    handleOpenTenantLogin,
     handleExportTenantsCSV,
     handleExportPaymentsCSV,
     handleSaveWidgetPrefs,
     handleResetWidgetPrefs,
   };
 };
-

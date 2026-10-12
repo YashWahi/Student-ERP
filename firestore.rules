@@ -7,6 +7,20 @@ service cloud.firestore {
       return request.auth != null;
     }
 
+    function callerProfile() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
+    }
+
+    function isPlatformAdmin() {
+      return isAuthenticated() && callerProfile().role == 'superadmin';
+    }
+
+    function managesTenant(tenantId) {
+      return isAuthenticated() &&
+        callerProfile().role in ['admin', 'subadmin'] &&
+        callerProfile().tenantId == tenantId;
+    }
+
     // Platform Multi-Tenant Access Rules
     match /tenants/{tenantId} {
       allow read: if true;
@@ -20,13 +34,33 @@ service cloud.firestore {
 
     // Users Collection
     match /users/{userId} {
-      allow read, write: if isAuthenticated() || request.auth.uid == userId;
+      allow get: if isAuthenticated() &&
+        (request.auth.uid == userId || isPlatformAdmin() || managesTenant(resource.data.tenantId));
+      allow list: if isPlatformAdmin() ||
+        (isAuthenticated() && managesTenant(resource.data.tenantId));
+      allow create, delete: if false;
+      allow update: if isAuthenticated() && (
+        (
+          request.auth.uid == userId &&
+          request.resource.data.uid == resource.data.uid &&
+          request.resource.data.role == resource.data.role &&
+          request.resource.data.tenantId == resource.data.tenantId &&
+          request.resource.data.diff(resource.data).affectedKeys()
+            .hasOnly(['name', 'phone', 'avatar', 'updatedAt'])
+        ) ||
+        (
+          (isPlatformAdmin() || managesTenant(resource.data.tenantId)) &&
+          request.resource.data.uid == userId &&
+          request.resource.data.role == resource.data.role &&
+          request.resource.data.tenantId == resource.data.tenantId
+        )
+      );
     }
 
     // Operational Collections Guard (Students, Fees, Attendance, Timetable, Exams, etc.)
     match /{collectionId}/{docId} {
-      allow read: if true;
-      allow write: if isAuthenticated();
+      allow read: if collectionId != 'users';
+      allow write: if collectionId != 'users' && isAuthenticated();
     }
   }
 }

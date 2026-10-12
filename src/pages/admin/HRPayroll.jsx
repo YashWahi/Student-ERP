@@ -9,6 +9,7 @@ import Modal from '../../components/common/Modal';
 import { exportToCSV } from '../../services/exportService';
 import { generateStaffPayslipPDF } from '../../services/pdfService';
 import { logAuditEvent } from '../../services/auditService';
+import { createUserAccount } from '../../services/authService';
 import { useAuthStore } from '../../store/authStore';
 import toast from 'react-hot-toast';
 
@@ -68,54 +69,50 @@ const HRPayroll = () => {
 
   const handleOnboardEmployee = async (e) => {
     e.preventDefault();
-    const newEmp = {
-      id: `emp_${Date.now()}`,
-      empId: `EMP-${Math.floor(100 + Math.random() * 900)}`,
-      name: onboardData.name,
-      role: 'Staff',
-      dept: onboardData.dept,
-      designation: onboardData.designation,
-      basicSalary: Number(onboardData.basicSalary),
-      allowances: 6000,
-      deductions: 2000,
-      netPay: Number(onboardData.basicSalary) + 4000,
-      loanBalance: 0,
-      status: 'Paid',
-      joiningDate: onboardData.joiningDate,
-    };
-    updateStaffState([newEmp, ...staffList]);
-    
-    // Save to custom_users so staff member can log in immediately
     try {
-      const customUsers = JSON.parse(localStorage.getItem('custom_users') || '[]');
-      customUsers.unshift({
-        uid: newEmp.id,
-        email: (onboardData.email || `${onboardData.name.toLowerCase().replace(/\s+/g, '.')}@staff.edu`).toLowerCase(),
-        password: onboardData.password || 'staff123',
-        name: onboardData.name,
+      const account = await createUserAccount({
+        email: onboardData.email.trim().toLowerCase(),
+        name: onboardData.name.trim(),
         role: 'staff',
-        tenantId: activeTenantId || 'tenant_gvis',
-        branchId: 'branch_main',
-        status: 'Active',
-        schoolName: 'Staff Operations Portal'
+        tenantId: currentTenant,
+        branchId: userProfile?.branchId || null,
+        phone: onboardData.phone,
       });
-      localStorage.setItem('custom_users', JSON.stringify(customUsers));
-    } catch (e) {
-      console.warn('LocalStorage custom_users save error:', e);
-    }
 
-    await logAuditEvent({
-      action: 'STAFF_ONBOARDING',
-      actor: 'Admin',
-      target: onboardData.name,
-      details: `Onboarded employee ${onboardData.name} into ${onboardData.dept}`,
-      tenantId: activeTenantId || 'tenant_gvis',
-    });
-    toast.success(`🎉 ${onboardData.name} onboarded as ${onboardData.designation}!`);
-    setShowOnboardModal(false);
-    setOnboardData({
-      name: '', email: '', phone: '', password: 'staff123', dept: 'Administration', designation: 'Operations Executive', basicSalary: 40000, joiningDate: new Date().toISOString().split('T')[0],
-    });
+      const newEmp = {
+        id: account.user.uid,
+        empId: `EMP-${Math.floor(100 + Math.random() * 900)}`,
+        name: onboardData.name,
+        email: account.profile.email,
+        role: 'Staff',
+        dept: onboardData.dept,
+        designation: onboardData.designation,
+        basicSalary: Number(onboardData.basicSalary),
+        allowances: 6000,
+        deductions: 2000,
+        netPay: Number(onboardData.basicSalary) + 4000,
+        loanBalance: 0,
+        status: 'Paid',
+        joiningDate: onboardData.joiningDate,
+      };
+      updateStaffState([newEmp, ...staffList]);
+
+      await logAuditEvent({
+        action: 'STAFF_ONBOARDING',
+        actor: userProfile?.uid || 'Admin',
+        target: onboardData.name,
+        details: `Onboarded employee ${onboardData.name} into ${onboardData.dept}`,
+        tenantId: currentTenant,
+      });
+      toast.success(`${onboardData.name} onboarded. Ask them to use Forgot Password to set their login password.`);
+      setShowOnboardModal(false);
+      setOnboardData({
+        name: '', email: '', phone: '', dept: 'Administration', designation: 'Operations Executive', basicSalary: 40000, joiningDate: new Date().toISOString().split('T')[0],
+      });
+    } catch (error) {
+      console.error('Unable to onboard staff account:', error);
+      toast.error(error.message || 'Unable to onboard staff account.');
+    }
   };
 
   const handleApproveLeave = async (leaveId, empName) => {
@@ -330,6 +327,9 @@ const HRPayroll = () => {
               <input className="form-input" type="date" value={onboardData.joiningDate} onChange={e => setOnboardData({ ...onboardData, joiningDate: e.target.value })} required />
             </div>
           </div>
+          <p style={{ fontSize: '0.75rem', color: '#64748B', marginTop: 12 }}>
+            A random initial password is generated for this account. The employee can use Forgot Password to set their own.
+          </p>
           <div className="flex justify-end gap-2" style={{ marginTop: 20 }}>
             <button type="button" className="btn btn-ghost" onClick={() => setShowOnboardModal(false)}>Cancel</button>
             <button type="submit" className="btn btn-primary">Complete Onboarding</button>
