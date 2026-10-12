@@ -7,12 +7,10 @@
 // ║  logic. They are NOT calling any real AI API.                   ║
 // ║                                                                  ║
 // ║  SECURITY NOTE (Issue #43):                                     ║
-// ║  The previous implementation declared:                          ║
-// ║    const GROQ_API_KEY = import.meta.env.VITE_GROQ_API_KEY       ║
-// ║  Any VITE_* variable is bundled into client JavaScript and is   ║
-// ║  visible to every browser. A Groq (or any LLM) secret key      ║
-// ║  MUST NEVER be placed in a VITE_* variable or any client-side  ║
-// ║  code. That declaration has been removed.                       ║
+// ║  A private AI API credential must never be placed in any       ║
+// ║  browser-exposed frontend variable or client-side code.         ║
+// ║  Any secret key used by Groq/OpenAI must live server-side only. ║
+// ║  This mock implementation intentionally avoids any real API.    ║
 // ║                                                                  ║
 // ║  TO ENABLE REAL AI:                                             ║
 // ║  Real AI API calls require a server-side boundary. Options:    ║
