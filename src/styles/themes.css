@@ -1,0 +1,48 @@
+/* ========================================================
+   EduERP Pro — Theme Presets & Theme Customization Variables
+   ======================================================== */
+
+.theme-preset-blue {
+  --color-primary: #2563EB;
+  --color-primary-hover: #1D4ED8;
+  --color-primary-light: #EFF6FF;
+  --color-primary-border: #BFDBFE;
+  --color-primary-glow: rgba(37, 99, 235, 0.15);
+  --color-secondary: #0F766E;
+}
+
+.theme-preset-green {
+  --color-primary: #059669;
+  --color-primary-hover: #047857;
+  --color-primary-light: #ECFDF5;
+  --color-primary-border: #A7F3D0;
+  --color-primary-glow: rgba(5, 150, 105, 0.15);
+  --color-secondary: #2563EB;
+}
+
+.theme-preset-purple {
+  --color-primary: #7C3AED;
+  --color-primary-hover: #6D28D9;
+  --color-primary-light: #F3E8FF;
+  --color-primary-border: #DDD6FE;
+  --color-primary-glow: rgba(124, 58, 237, 0.15);
+  --color-secondary: #DB2777;
+}
+
+.theme-preset-navy {
+  --color-primary: #1E3A8A;
+  --color-primary-hover: #1E40AF;
+  --color-primary-light: #EFF6FF;
+  --color-primary-border: #93C5FD;
+  --color-primary-glow: rgba(30, 58, 138, 0.15);
+  --color-secondary: #0284C7;
+}
+
+.theme-preset-gray {
+  --color-primary: #334155;
+  --color-primary-hover: #1E293B;
+  --color-primary-light: #F8FAFC;
+  --color-primary-border: #CBD5E1;
+  --color-primary-glow: rgba(51, 65, 85, 0.15);
+  --color-secondary: #475569;
+}
